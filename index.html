@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Maestro - Total Body Calibration</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        .input_video { position: fixed; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); z-index: 0; filter: brightness(1.2) contrast(1.1); opacity: 0.5; }
+        .output_canvas { position: fixed; width: 100%; height: 100%; z-index: 1; transform: scaleX(-1); pointer-events: none; }
+        
+        #ui-overlay { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.8); text-align: center; color: white; transition: 0.5s; }
+        .btn { padding: 20px 50px; background: #00ffea; color: black; border: none; border-radius: 50px; font-weight: bold; cursor: pointer; font-size: 1.2em; text-transform: uppercase; box-shadow: 0 0 30px rgba(0,255,234,0.4); }
+        
+        #countdown { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 15vw; color: #00ffea; z-index: 20; display: none; }
+        .cal-box { width: 300px; height: 10px; background: #222; border-radius: 5px; margin-top: 20px; overflow: hidden; }
+        .cal-fill { width: 0%; height: 100%; background: #00ffea; transition: width 0.1s; }
+    </style>
+</head>
+<body>
+
+    <video class="input_video" playsinline muted></video>
+    <canvas class="output_canvas"></canvas>
+    <div id="countdown">3</div>
+
+    <div id="ui-overlay">
+        <div id="setup">
+            <h1 style="color:#00ffea; letter-spacing: 5px;">MAESTRO TOTAL BODY</h1>
+            <p style="margin-bottom: 30px; color: #ccc;">Calibración simplificada de frente</p>
+            <input type="file" id="audio-input" accept="audio/*" style="display:none">
+            <button class="btn" onclick="document.getElementById('audio-input').click()">SUBIR MÚSICA</button>
+        </div>
+
+        <div id="calibrating" style="display:none">
+            <h2 style="color:#00ffea">ANALIZANDO TU CUERPO</h2>
+            <p>Quédate quieto frente a la cámara...</p>
+            <div class="cal-box"><div id="cal-bar" class="cal-fill"></div></div>
+        </div>
+
+        <div id="ready" style="display:none">
+            <h2 style="color:#00ffea">CALIBRACIÓN COMPLETA</h2>
+            <button class="btn" onclick="startPerformance()">EMPEZAR A DIRIGIR</button>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const audioInput = document.getElementById('audio-input');
+        
+        let player, isPlaying = false;
+        let pose;
+        let calProgress = 0;
+        let currentRate = 1.0;
+        let lastY = 0;
+
+        audioInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                await Tone.start();
+                player = new Tone.Player(url).toDestination();
+                player.loop = true;
+                
+                document.getElementById('setup').style.display = 'none';
+                document.getElementById('calibrating').style.display = 'block';
+                initPose();
+            }
+        };
+
+        function initPose() {
+            pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+            pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5 });
+            pose.onResults(onResults);
+
+            new Camera(videoElement, {
+                onFrame: async () => { await pose.send({image: videoElement}); },
+                width: 640, height: 480
+            }).start();
+        }
+
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                drawAdvancedSkeleton(results.poseLandmarks);
+                
+                // Calibración de un solo paso
+                if (calProgress < 100) {
+                    calProgress += 0.8;
+                    document.getElementById('cal-bar').style.width = calProgress + "%";
+                    if (calProgress >= 100) {
+                        document.getElementById('calibrating').style.display = 'none';
+                        document.getElementById('ready').style.display = 'block';
+                    }
+                }
+
+                if (isPlaying) {
+                    const wrist = results.poseLandmarks[16];
+                    const speed = Math.abs(wrist.y - lastY) * 80;
+                    lastY = wrist.y;
+
+                    let target = Math.min(Math.max(speed / 6, 0.7), 1.8);
+                    if (speed < 0.4) target = 1.0;
+                    
+                    currentRate = (currentRate * 0.93) + (target * 0.07);
+                    player.playbackRate = currentRate;
+                }
+            }
+        }
+
+        function drawAdvancedSkeleton(lm) {
+            canvasCtx.lineWidth = 3;
+            canvasCtx.strokeStyle = "rgba(0, 255, 234, 0.8)";
+            canvasCtx.lineCap = "round";
+
+            const p = (i) => ({ x: lm[i].x * canvasElement.width, y: lm[i].y * canvasElement.height });
+
+            const pts = {
+                nose: p(0), lS: p(11), rS: p(12), lE: p(13), rE: p(14), lW: p(15), rW: p(16), lH: p(23), rH: p(24)
+            };
+
+            const neck = { x: (pts.lS.x + pts.rS.x)/2, y: (pts.lS.y + pts.rS.y)/2 };
+            const pelvic = { x: (pts.lH.x + pts.rH.x)/2, y: (pts.lH.y + pts.rH.y)/2 };
+
+            // 1. Eje Central (Cabeza -> Pelvis)
+            canvasCtx.beginPath();
+            canvasCtx.strokeStyle = "#ffffff";
+            canvasCtx.moveTo(pts.nose.x, pts.nose.y);
+            canvasCtx.lineTo(neck.x, neck.y);
+            canvasCtx.lineTo(pelvic.x, pelvic.y);
+            canvasCtx.stroke();
+
+            // 2. Línea de Hombros y Codos (Nueva línea Inter-Codos)
+            canvasCtx.beginPath();
+            canvasCtx.strokeStyle = "#00ffea";
+            canvasCtx.lineWidth = 5;
+            // Estructura de brazos
+            canvasCtx.moveTo(pts.lW.x, pts.lW.y); canvasCtx.lineTo(pts.lE.x, pts.lE.y);
+            canvasCtx.lineTo(pts.lS.x, pts.lS.y); canvasCtx.lineTo(pts.rS.x, pts.rS.y);
+            canvasCtx.lineTo(pts.rE.x, pts.rE.y); canvasCtx.lineTo(pts.rW.x, pts.rW.y);
+            canvasCtx.stroke();
+
+            // LÍNEA ESPECIAL: Codo a Codo
+            canvasCtx.beginPath();
+            canvasCtx.lineWidth = 1;
+            canvasCtx.setLineDash([5, 5]);
+            canvasCtx.moveTo(pts.lE.x, pts.lE.y); canvasCtx.lineTo(pts.rE.x, pts.rE.y);
+            canvasCtx.stroke();
+            canvasCtx.setLineDash([]);
+
+            // 3. Punto de Cabeza (Mirada)
+            canvasCtx.fillStyle = "#00ffea";
+            canvasCtx.beginPath();
+            canvasCtx.arc(pts.nose.x, pts.nose.y, 8, 0, Math.PI*2);
+            canvasCtx.fill();
+        }
+
+        function startPerformance() {
+            document.getElementById('ui-overlay').style.display = 'none';
+            const cd = document.getElementById('countdown');
+            cd.style.display = 'block';
+            let count = 3;
+            const timer = setInterval(() => {
+                count--;
+                cd.innerText = count;
+                if (count <= 0) {
+                    clearInterval(timer);
+                    cd.style.display = 'none';
+                    player.start();
+                    isPlaying = true;
+                }
+            }, 1000);
+        }
+    </script>
+</body>
+</html>
