@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Conductor - Prototipo</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            background-color: #1a1a1a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        #container {
+            position: relative;
+            width: 640px;
+            height: 480px;
+            background: #000;
+            border-radius: 20px;
+            box-shadow: 0 0 50px rgba(0, 255, 200, 0.2);
+            overflow: hidden;
+        }
+
+        /* Video oculto, solo usamos el canvas */
+        .input_video {
+            display: none;
+        }
+
+        .output_canvas {
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1); /* Efecto espejo */
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0,0,0,0.8);
+            z-index: 10;
+            transition: opacity 0.5s;
+        }
+
+        h1 { margin-bottom: 10px; font-weight: 300; letter-spacing: 2px; }
+        p { color: #aaa; margin-bottom: 30px; text-align: center; max-width: 80%; }
+
+        button {
+            padding: 15px 40px;
+            font-size: 18px;
+            background: linear-gradient(45deg, #00d2ff, #3a7bd5);
+            border: none;
+            border-radius: 50px;
+            color: white;
+            cursor: pointer;
+            transition: transform 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: bold;
+        }
+
+        button:hover { transform: scale(1.05); box-shadow: 0 0 20px rgba(0, 210, 255, 0.6); }
+
+        #bpm-display {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #00ffcc;
+            text-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+            z-index: 5;
+        }
+
+        #status {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #fff;
+            background: rgba(0,0,0,0.5);
+            padding: 5px 15px;
+            border-radius: 10px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="container">
+        <div id="bpm-display">BPM: 0</div>
+        <div id="overlay">
+            <h1>AI MAESTRO</h1>
+            <p>Usa tu mano para dirigir la orquesta.<br>Mueve la mano arriba y abajo: cuanto más rápido muevas, más rápido tocarán.</p>
+            <button id="start-btn">COMENZAR</button>
+        </div>
+        <video class="input_video"></video>
+        <canvas class="output_canvas" width="640" height="480"></canvas>
+        <div id="status">Esperando cámara...</div>
+    </div>
+
+    <script>
+        // --- CONFIGURACIÓN DE AUDIO (TONE.JS) ---
+        // Una melodía simple estilo clásica (Parte de Eine Kleine Nachtmusik simplificada)
+        const melodyNotes = [
+            "G4", "D4", "G4", "D4", "G4", "D4", "G4", "B3", "D4", "null", 
+            "C5", "A4", "C5", "A4", "C5", "A4", "F#4", "A4", "D4", "null",
+            "G4", "G4", "B4", "A4", "G4", "F#4", "G4", "A4", "D4", "null"
+        ];
+        
+        // Sintetizador polifónico
+        const synth = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: "triangle" },
+            envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 }
+        }).toDestination();
+        
+        // Efecto de reverb para sonar como una sala de conciertos
+        const reverb = new Tone.Reverb(2).toDestination();
+        synth.connect(reverb);
+
+        // Secuencia musical
+        let sequence;
+
+        // --- VARIABLES DE LÓGICA DE DIRECCIÓN ---
+        let previousY = null;
+        let lastTime = Date.now();
+        let targetBPM = 0;
+        let currentBPM = 0;
+        let isConducting = false;
+        
+        // Elementos del DOM
+        const videoElement = document.getElementsByClassName('input_video')[0];
+        const canvasElement = document.getElementsByClassName('output_canvas')[0];
+        const canvasCtx = canvasElement.getContext('2d');
+        const bpmDisplay = document.getElementById('bpm-display');
+        const startBtn = document.getElementById('start-btn');
+        const overlay = document.getElementById('overlay');
+        const statusText = document.getElementById('status');
+
+        // --- INICIALIZACIÓN ---
+        
+        startBtn.addEventListener('click', async () => {
+            await Tone.start(); // Iniciar contexto de audio
+            console.log('Audio Context Started');
+            
+            // Configurar secuencia
+            sequence = new Tone.Sequence((time, note) => {
+                if (note !== "null") synth.triggerAttackRelease(note, "8n", time);
+            }, melodyNotes, "8n");
+
+            sequence.start(0);
+            Tone.Transport.start();
+            Tone.Transport.bpm.value = 0; // Empezar parado
+
+            overlay.style.opacity = 0;
+            setTimeout(() => overlay.style.display = 'none', 500);
+            
+            initCamera();
+        });
+
+        // --- LÓGICA DE VISIÓN (MEDIAPIPE) ---
+
+        function onResults(results) {
+            // Limpiar y dibujar canvas
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // Dibujar los puntos de la mano
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+                drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 1});
+
+                // LÓGICA PRINCIPAL: Calcular velocidad de la muñeca (punto 0)
+                const wrist = landmarks[0];
+                const now = Date.now();
+                const deltaTime = now - lastTime;
+
+                if (previousY !== null && deltaTime > 50) { // Calcular cada ~50ms para suavizar
+                    // Distancia vertical (absoluta)
+                    const deltaY = Math.abs(wrist.y - previousY);
+                    
+                    // Velocidad = Distancia / Tiempo
+                    // Multiplicamos por factores para ajustar la sensibilidad
+                    const speed = deltaY / deltaTime * 10000;
+
+                    // Mapear velocidad a BPM (0 a 200 BPM)
+                    // Umbral mínimo de movimiento para evitar ruido
+                    if (speed > 2) { 
+                        targetBPM = Math.min(Math.max(speed * 8, 40), 240);
+                        statusText.innerText = "¡Dirigiendo!";
+                    } else {
+                        targetBPM = 0; // Si para la mano, la música se detiene gradualmente
+                        statusText.innerText = "Mueve la mano para tocar";
+                    }
+
+                    lastTime = now;
+                    previousY = wrist.y;
+                } else if (previousY === null) {
+                    previousY = wrist.y;
+                }
+
+            } else {
+                targetBPM = 0;
+                statusText.innerText = "Muestra tu mano a la cámara";
+            }
+
+            // --- SUAVIZADO DEL TEMPO (INTERPOLACIÓN) ---
+            // Esto hace que el cambio de velocidad no sea brusco, sino fluido
+            if (currentBPM < targetBPM) {
+                currentBPM += 2; // Acelerar
+            } else if (currentBPM > targetBPM) {
+                currentBPM -= 2; // Desacelerar
+            }
+
+            // Aplicar el BPM al sistema de audio
+            // Si el BPM es muy bajo, silenciamos o pausamos virtualmente
+            if (currentBPM < 10) {
+                 Tone.Transport.bpm.value = 0;
+                 bpmDisplay.innerText = "BPM: 0";
+            } else {
+                Tone.Transport.bpm.value = currentBPM;
+                bpmDisplay.innerText = "BPM: " + Math.round(currentBPM);
+            }
+
+            canvasCtx.restore();
+        }
+
+        function initCamera() {
+            const hands = new Hands({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }});
+
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onResults);
+
+            const camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640,
+                height: 480
+            });
+            camera.start();
+        }
+    </script>
+</body>
+</html>
