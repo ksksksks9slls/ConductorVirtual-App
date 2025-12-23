@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Maestro Pro - Mobile & Desktop</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: 'Segoe UI', Roboto, sans-serif; }
+        
+        /* Capas de video y dibujo */
+        .input_video { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); z-index: 0; opacity: 0.4; }
+        .output_canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; transform: scaleX(-1); pointer-events: none; }
+        
+        /* Pantalla de carga inicial */
+        #setup-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 10;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: radial-gradient(circle, #1a1a1a 0%, #000 100%); color: white; text-align: center; padding: 20px;
+        }
+
+        h1 { font-size: 2.5em; letter-spacing: 5px; color: #00ffea; text-shadow: 0 0 15px #00ffea; margin: 0; }
+        .instr { margin: 20px 0; color: #888; line-height: 1.5; }
+
+        /* Botón de carga personalizado */
+        .custom-file-upload {
+            padding: 15px 40px;
+            background: transparent;
+            color: #00ffea;
+            border: 2px solid #00ffea;
+            border-radius: 50px;
+            font-size: 1.1em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: inline-block;
+            text-transform: uppercase;
+        }
+
+        .custom-file-upload:active { transform: scale(0.95); background: rgba(0, 255, 234, 0.2); }
+        input[type="file"] { display: none; }
+
+        /* HUD (Indicadores) */
+        #hud {
+            position: fixed; top: 20px; left: 20px; z-index: 5; color: #00ffea;
+            font-family: monospace; display: none; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 8px;
+        }
+        .bar-label { font-size: 11px; letter-spacing: 1px; margin-bottom: 4px; }
+        .bar { width: 150px; height: 5px; background: rgba(255,255,255,0.1); margin-bottom: 12px; border-radius: 2px; overflow: hidden; }
+        .fill { height: 100%; background: #00ffea; width: 0%; transition: width 0.1s; }
+
+        #loading-msg { margin-top: 15px; color: #00ffea; display: none; }
+    </style>
+</head>
+<body>
+
+    <video class="input_video" playsinline muted></video>
+    <canvas class="output_canvas"></canvas>
+
+    <div id="hud">
+        <div class="bar-label">TEMPO: <span id="bpm-txt">0</span>%</div>
+        <div class="bar"><div id="bpm-fill" class="fill"></div></div>
+        <div class="bar-label">VOLUMEN</div>
+        <div class="bar"><div id="vol-fill" class="fill" style="background:#ff0055;"></div></div>
+    </div>
+
+    <div id="setup-screen">
+        <h1>MAESTRO AI</h1>
+        <p class="instr">Compatible con Android, iOS y PC.<br>Selecciona tu archivo de música (M4A, MP3 o WAV)</p>
+        
+        <label class="custom-file-upload">
+            <input type="file" id="file-input" accept="audio/*">
+            ELEGIR MÚSICA
+        </label>
+        
+        <div id="loading-msg">Cargando orquesta...</div>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const fileInput = document.getElementById('file-input');
+        const setupScreen = document.getElementById('setup-screen');
+        const loadingMsg = document.getElementById('loading-msg');
+        
+        let player, isPlaying = false;
+        let speedAcc = 0, ampAcc = 0, prevPos = null;
+        let trail = [];
+
+        // 1. CARGA DE ARCHIVO MEDIANTE BOTÓN
+        fileInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                loadingMsg.style.display = 'block';
+                const url = URL.createObjectURL(file);
+                setupAudio(url);
+            }
+        };
+
+        async function setupAudio(url) {
+            await Tone.start();
+            player = new Tone.Player({
+                url: url,
+                loop: true,
+                onload: () => {
+                    player.toDestination();
+                    setupScreen.style.display = 'none';
+                    document.getElementById('hud').style.display = 'block';
+                    initCamera();
+                    isPlaying = true;
+                },
+                onerror: () => {
+                    alert("Error con el audio. Prueba con otro archivo.");
+                    loadingMsg.style.display = 'none';
+                }
+            });
+        }
+
+        // 2. IA DE SEGUIMIENTO (Optimizado para móvil)
+        function initCamera() {
+            const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+            
+            // modelComplexity 0 es clave para que Android no se trabe
+            hands.setOptions({ 
+                maxNumHands: 1, 
+                modelComplexity: 0,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+            
+            hands.onResults(onResults);
+
+            const camera = new Camera(videoElement, {
+                onFrame: async () => { await hands.send({image: videoElement}); },
+                width: 640, height: 480
+            });
+            camera.start();
+        }
+
+        // 3. LOGICA Y RENDERIZADO
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const hand = results.multiHandLandmarks[0][8]; // Dedo índice
+                const x = hand.x * canvasElement.width;
+                const y = hand.y * canvasElement.height;
+
+                trail.push({x, y, age: 0});
+                if (prevPos) {
+                    const dist = Math.sqrt(Math.pow(x - prevPos.x, 2) + Math.pow(y - prevPos.y, 2));
+                    // Sensibilidad ajustada para dedos
+                    speedAcc = (speedAcc * 0.8) + (dist * 0.2);
+                    ampAcc = (ampAcc * 0.8) + (Math.abs(y - prevPos.y) * 5);
+                }
+                prevPos = {x, y};
+            } else {
+                speedAcc *= 0.8; ampAcc *= 0.8;
+                if (trail.length > 0) trail.shift();
+            }
+
+            drawTrail();
+
+            if (isPlaying && player.loaded) {
+                // Lógica de Tempo: de 0.2x a 2.2x
+                let rate = Math.min(Math.max(speedAcc / 18, 0), 2.2);
+                let vol = -35 + (ampAcc * 1.5);
+                
+                if (rate < 0.1) {
+                    player.volume.rampTo(-Infinity, 0.2);
+                } else {
+                    player.playbackRate = rate;
+                    player.volume.rampTo(Math.min(vol, 0), 0.1);
+                    if (player.state !== "started") player.start();
+                }
+
+                document.getElementById('bpm-txt').innerText = Math.round(rate * 100);
+                document.getElementById('bpm-fill').style.width = Math.min(rate * 45, 100) + "%";
+                document.getElementById('vol-fill').style.width = Math.min(Math.max(0, vol + 35) * 2.8, 100) + "%";
+            }
+        }
+
+        function drawTrail() {
+            for (let i = 0; i < trail.length; i++) {
+                let p = trail[i];
+                p.age += 1;
+                let opacity = 1 - (p.age / 15);
+                if (opacity <= 0) {
+                    trail.splice(i, 1);
+                    continue;
+                }
+                canvasCtx.beginPath();
+                canvasCtx.arc(p.x, p.y, 10 * opacity, 0, 2 * Math.PI);
+                canvasCtx.fillStyle = `rgba(0, 255, 234, ${opacity})`;
+                canvasCtx.fill();
+            }
+        }
+    </script>
+</body>
+</html>
