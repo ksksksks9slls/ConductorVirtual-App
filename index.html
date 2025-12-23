@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Maestro AI 13.0 - Corregido</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: sans-serif; }
+        .input_video { position: fixed; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); z-index: 0; opacity: 0.6; }
+        .output_canvas { position: fixed; width: 100%; height: 100%; z-index: 1; transform: scaleX(-1); pointer-events: none; }
+        
+        #ui-layer { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.5); text-align: center; }
+        .panel { background: rgba(30, 30, 30, 0.9); padding: 25px; border-radius: 20px; border: 2px solid #00ffea; width: 80%; max-width: 350px; color: white; }
+        
+        .btn { padding: 15px; background: #00ffea; color: #000; border: none; border-radius: 50px; font-weight: bold; cursor: pointer; width: 100%; text-transform: uppercase; margin-top: 10px; }
+        #status-msg { margin-top: 15px; color: #00ffea; font-weight: bold; }
+        
+        /* Indicador de Tiempo (Beat) */
+        #beat-indicator { position: fixed; bottom: 50px; left: 50%; transform: translateX(-50%); width: 60px; height: 60px; border-radius: 50%; border: 4px solid #00ffea; z-index: 5; display: none; }
+        #tempo-text { position: fixed; top: 20px; left: 20px; color: #00ffea; font-size: 1.5em; z-index: 5; font-family: monospace; }
+    </style>
+</head>
+<body>
+
+    <video class="input_video" playsinline muted></video>
+    <canvas class="output_canvas"></canvas>
+    <div id="tempo-text">TEMPO: 100%</div>
+    <div id="beat-indicator"></div>
+
+    <div id="ui-layer">
+        <div id="panel-content" class="panel">
+            <h2 id="main-title">MAESTRO 13.0</h2>
+            <div id="actions">
+                <input type="file" id="audio-input" accept="audio/*" style="display:none">
+                <button class="btn" onclick="document.getElementById('audio-input').click()">SELECCIONAR MÚSICA</button>
+            </div>
+            <div id="status-msg">ESPERANDO AUDIO...</div>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const audioInput = document.getElementById('audio-input');
+        const beatCircle = document.getElementById('beat-indicator');
+
+        let player, isPlaying = false;
+        let flowState = "START"; 
+        let calProgress = 0, golpesDados = 0, useBaton = false;
+        let lastY = 0, subiendo = false, detectadoEnAlto = false;
+        let beatAnim = 0;
+
+        const woodTap = new Tone.MembraneSynth({ envelope: { attack: 0.001, decay: 0.1, sustain: 0 } }).toDestination();
+
+        audioInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                await Tone.start();
+                player = new Tone.Player(URL.createObjectURL(file)).toDestination();
+                player.loop = true;
+                flowState = "CAL_BODY";
+                updateUI();
+                initPose();
+            }
+        };
+
+        function updateUI() {
+            const actions = document.getElementById('actions');
+            if (flowState === "CHOOSE_BATON") {
+                actions.innerHTML = `
+                    <button class="btn" onclick="confirmBaton(true)">MODO BATUTA</button>
+                    <button class="btn" style="background:#444;color:white" onclick="confirmBaton(false)">MODO MANOS</button>
+                `;
+            } else if (flowState === "RITUAL") {
+                document.getElementById('ui-layer').style.background = "transparent";
+                document.getElementById('panel-content').style.display = "none";
+                document.getElementById('status-msg').innerText = "LEVANTA LA BATUTA Y DA 3 GOLPES";
+            }
+        }
+
+        function confirmBaton(val) {
+            useBaton = val;
+            flowState = useBaton ? "CAL_BATON" : "RITUAL";
+            calProgress = 0;
+            updateUI();
+        }
+
+        function initPose() {
+            const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+            pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+            pose.onResults(onResults);
+            new Camera(videoElement, { onFrame: async () => { await pose.send({image: videoElement}); }, width: 640, height: 480 }).start();
+        }
+
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                const lm = results.poseLandmarks;
+                drawSkeleton(lm);
+
+                if (flowState === "CAL_BODY") {
+                    calProgress += 1;
+                    document.getElementById('status-msg').innerText = `CALIBRANDO CUERPO: ${Math.round(calProgress)}%`;
+                    if (calProgress >= 100) { flowState = "CHOOSE_BATON"; updateUI(); }
+                }
+
+                if (flowState === "CAL_BATON") {
+                    // Detección más sensible: mide distancia entre muñeca y punta de dedos
+                    const handSize = Math.hypot(lm[16].x - lm[20].x, lm[16].y - lm[20].y);
+                    if (handSize > 0.05) { 
+                        calProgress += 2;
+                        document.getElementById('status-msg').innerText = `DETECTANDO OBJETO: ${Math.round(calProgress)}%`;
+                        if (calProgress >= 100) { flowState = "RITUAL"; updateUI(); }
+                    }
+                }
+
+                const ref = useBaton ? lm[20] : lm[16];
+
+                if (flowState === "RITUAL") {
+                    if (ref.y < 0.4) detectadoEnAlto = true;
+                    if (detectadoEnAlto) {
+                        if (lastY < ref.y - 0.07 && !subiendo) {
+                            woodTap.triggerAttackRelease("G2", "16n");
+                            golpesDados++;
+                            subiendo = true;
+                            if (golpesDados >= 3) {
+                                player.start();
+                                isPlaying = true;
+                                flowState = "PLAYING";
+                                beatCircle.style.display = "block";
+                            }
+                        }
+                        if (ref.y < lastY - 0.05) subiendo = false;
+                    }
+                }
+
+                if (isPlaying) {
+                    const speed = Math.abs(ref.y - lastY) * 100;
+                    if (speed < 0.04) {
+                        player.mute = true; // En lugar de reiniciar, silenciamos
+                    } else {
+                        player.mute = false;
+                        let targetTempo = Math.min(Math.max(speed / 6, 0.7), 1.8);
+                        player.playbackRate = targetTempo;
+                        document.getElementById('tempo-text').innerText = `TEMPO: ${Math.round(targetTempo * 100)}%`;
+                        
+                        // Animación del indicador de tiempo basado en movimiento
+                        beatAnim = (speed * 10);
+                        beatCircle.style.backgroundColor = `rgba(0, 255, 234, ${Math.min(speed, 1)})`;
+                        beatCircle.style.transform = `translateX(-50%) scale(${1 + (speed/5)})`;
+                    }
+                }
+                lastY = ref.y;
+            }
+        }
+
+        function drawSkeleton(lm) {
+            const p = (i) => ({ x: lm[i].x * canvasElement.width, y: lm[i].y * canvasElement.height });
+            canvasCtx.strokeStyle = "#00ffea";
+            canvasCtx.lineWidth = 6;
+            canvasCtx.lineCap = "round";
+
+            // Brazos pegados a la articulación
+            const drawLine = (a, b) => {
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(p(a).x, p(a).y);
+                canvasCtx.lineTo(p(b).x, p(b).y);
+                canvasCtx.stroke();
+            };
+
+            drawLine(11, 13); drawLine(13, 15); // Brazo izq
+            drawLine(12, 14); drawLine(14, 16); // Brazo der
+            drawLine(11, 12); // Hombros
+            
+            // Si usa batuta, extender desde la muñeca (16) al punto detectado (20)
+            if (useBaton) {
+                canvasCtx.strokeStyle = "#ff0055";
+                drawLine(16, 20);
+                canvasCtx.fillStyle = "white";
+                canvasCtx.beginPath();
+                canvasCtx.arc(p(20).x, p(20).y, 5, 0, 7);
+                canvasCtx.fill();
+            }
+        }
+    </script>
+</body>
+</html>
