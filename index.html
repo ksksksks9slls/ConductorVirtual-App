@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Maestro 3.0 - Calibración de Esqueleto</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        
+        .input_video { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            object-fit: cover; transform: scaleX(-1); z-index: 0; 
+            filter: brightness(1.5) contrast(1.1) saturate(1.2);
+            opacity: 0.6;
+        }
+
+        .output_canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; transform: scaleX(-1); pointer-events: none; }
+        
+        #overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 10;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: rgba(0,0,0,0.9); color: white; text-align: center; transition: 0.5s;
+        }
+
+        .btn-main {
+            padding: 20px 50px; background: #00ffea; color: #000;
+            border: none; border-radius: 50px; font-weight: bold; font-size: 1.3em; cursor: pointer;
+            box-shadow: 0 0 20px #00ffea;
+        }
+
+        #status-bar {
+            position: fixed; top: 20px; width: 100%; text-align: center;
+            z-index: 5; color: #00ffea; font-family: monospace; font-size: 1.5em;
+            text-shadow: 0 0 10px #000; display: none;
+        }
+
+        #calibration-msg {
+            position: fixed; bottom: 50px; width: 100%; text-align: center;
+            color: #ff0055; font-weight: bold; z-index: 5; display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <video class="input_video" playsinline muted></video>
+    <canvas class="output_canvas"></canvas>
+
+    <div id="status-bar">MODO MAESTRO: <span id="bpm-txt">0</span>%</div>
+    <div id="calibration-msg">⚠️ BUSCANDO ESQUELETO... POR FAVOR ALÉJATE DE LA CÁMARA</div>
+
+    <div id="overlay">
+        <h1 style="color:#00ffea; letter-spacing: 10px;">MAESTRO 3.0</h1>
+        <p>Esta versión calibra tu torso, cabeza y brazos para mayor precisión.</p>
+        <input type="file" id="file-input" accept="audio/*" style="display:none">
+        <button class="btn-main" onclick="document.getElementById('file-input').click()">SUBIR MÚSICA Y CALIBRAR</button>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const fileInput = document.getElementById('file-input');
+        const bpmTxt = document.getElementById('bpm-txt');
+        const calMsg = document.getElementById('calibration-msg');
+        
+        let player, isPlaying = false;
+        let smoothRate = 1.0;
+        let lastWristPos = null;
+
+        // 1. CARGA DE AUDIO MEJORADA
+        fileInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                // Forzamos el inicio de Tone.js
+                await Tone.start();
+                player = new Tone.Player({
+                    url: url,
+                    loop: true,
+                    autostart: false,
+                    onload: () => {
+                        player.toDestination();
+                        document.getElementById('overlay').style.opacity = '0';
+                        setTimeout(() => document.getElementById('overlay').style.display = 'none', 500);
+                        document.getElementById('status-bar').style.display = 'block';
+                        calMsg.style.display = 'block';
+                        initPoseTracking();
+                    }
+                });
+            }
+        };
+
+        // 2. DETECCIÓN DE ESQUELETO (POSE)
+        function initPoseTracking() {
+            const pose = new Pose({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+            });
+
+            pose.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            pose.onResults(onResults);
+
+            const camera = new Camera(videoElement, {
+                onFrame: async () => { await pose.send({image: videoElement}); },
+                width: 640, height: 480
+            });
+            camera.start();
+        }
+
+        // 3. LÓGICA DE MOVIMIENTO BASADA EN HUESOS
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // Dibujar el esqueleto para que el usuario sepa que está calibrado
+            drawSkeleton(results.poseLandmarks);
+
+            if (results.poseLandmarks) {
+                calMsg.style.display = 'none';
+                
+                // Punto 16 es la muñeca derecha, punto 14 es el codo
+                const wrist = results.poseLandmarks[16];
+                const x = wrist.x * canvasElement.width;
+                const y = wrist.y * canvasElement.height;
+
+                let instantSpeed = 0;
+                if (lastWristPos) {
+                    const d = Math.sqrt(Math.pow(x - lastWristPos.x, 2) + Math.pow(y - lastWristPos.y, 2));
+                    instantSpeed = d;
+                }
+                lastWristPos = {x, y};
+
+                // Suavizado dinámico (Inercia)
+                let targetRate = Math.min(Math.max(instantSpeed / 12, 0.5), 2.0);
+                // Si el movimiento es muy bajo, tendemos al 100% (velocidad normal)
+                if (instantSpeed < 2) targetRate = 1.0;
+
+                smoothRate = (smoothRate * 0.9) + (targetRate * 0.1);
+
+                if (player && player.loaded) {
+                    if (player.state !== "started") player.start();
+                    player.playbackRate = smoothRate;
+                    bpmTxt.innerText = Math.round(smoothRate * 100);
+                }
+            } else {
+                calMsg.style.display = 'block';
+                smoothRate = (smoothRate * 0.95) + (1.0 * 0.05); // Volver a normal si se pierde
+            }
+        }
+
+        function drawSkeleton(landmarks) {
+            if (!landmarks) return;
+            canvasCtx.lineWidth = 5;
+            canvasCtx.strokeStyle = "#00ffea";
+            
+            // Dibujamos líneas básicas: Hombros y brazos
+            const points = [11, 12, 13, 14, 15, 16]; // Indices de MediaPipe Pose
+            
+            canvasCtx.beginPath();
+            // Hombro a hombro
+            canvasCtx.moveTo(landmarks[11].x * canvasElement.width, landmarks[11].y * canvasElement.height);
+            canvasCtx.lineTo(landmarks[12].x * canvasElement.width, landmarks[12].y * canvasElement.height);
+            // Brazo derecho (12 -> 14 -> 16)
+            canvasCtx.moveTo(landmarks[12].x * canvasElement.width, landmarks[12].y * canvasElement.height);
+            canvasCtx.lineTo(landmarks[14].x * canvasElement.width, landmarks[14].y * canvasElement.height);
+            canvasCtx.lineTo(landmarks[16].x * canvasElement.width, landmarks[16].y * canvasElement.height);
+            canvasCtx.stroke();
+
+            // Dibujar cabeza (punto 0 es la nariz)
+            canvasCtx.beginPath();
+            canvasCtx.arc(landmarks[0].x * canvasElement.width, landmarks[0].y * canvasElement.height, 20, 0, 2*Math.PI);
+            canvasCtx.fillStyle = "#00ffea";
+            canvasCtx.fill();
+        }
+    </script>
+</body>
+</html>
