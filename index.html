@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Maestro 6.0 - Edición Minimalista</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        .input_video { position: fixed; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); z-index: 0; filter: brightness(1.1) contrast(1.1); opacity: 0.4; }
+        .output_canvas { position: fixed; width: 100%; height: 100%; z-index: 1; transform: scaleX(-1); pointer-events: none; }
+        
+        #ui-layer { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.8); transition: 0.5s; text-align: center; color: white; }
+        .btn-start { padding: 18px 45px; background: #00ffea; color: black; border: none; border-radius: 50px; font-weight: bold; cursor: pointer; font-size: 1.2em; box-shadow: 0 0 25px rgba(0,255,234,0.5); }
+        
+        #countdown { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 12vw; color: #00ffea; z-index: 20; display: none; text-shadow: 0 0 30px #00ffea; }
+        
+        .msg-cal { font-size: 1.5em; color: #00ffea; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 3px; }
+        #progress-container { width: 300px; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }
+        #progress-bar { width: 0%; height: 100%; background: #00ffea; transition: width 0.1s; }
+    </style>
+</head>
+<body>
+
+    <video class="input_video" playsinline muted></video>
+    <canvas class="output_canvas"></canvas>
+    <div id="countdown">3</div>
+
+    <div id="ui-layer">
+        <div id="step-1">
+            <h1 style="color:#00ffea; letter-spacing: 5px;">MAESTRO 6.0</h1>
+            <p style="color:#aaa; margin-bottom: 30px;">Sube tu música para comenzar la calibración</p>
+            <input type="file" id="audio-input" accept="audio/*" style="display:none">
+            <button class="btn-start" onclick="document.getElementById('audio-input').click()">SELECCIONAR MÚSICA</button>
+        </div>
+
+        <div id="step-2" style="display:none">
+            <div class="msg-cal" id="cal-text">CALIBRANDO FRENTE...</div>
+            <div id="progress-container"><div id="progress-bar"></div></div>
+            <p style="margin-top:15px; font-size:0.9em; color:#888;">Mantente visible para la cámara</p>
+        </div>
+
+        <div id="step-3" style="display:none">
+            <h2 style="color:#00ffea">SISTEMA LISTO</h2>
+            <button class="btn-start" onclick="runCountdown()">EMPEZAR A DIRIGIR</button>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const audioInput = document.getElementById('audio-input');
+        
+        let player, isPlaying = false;
+        let poseModel;
+        let calVal = 0;
+        let orchestratorTempo = 1.0;
+        let lastWristY = 0;
+
+        // 1. CARGA DE AUDIO
+        audioInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                await Tone.start();
+                player = new Tone.Player(url).toDestination();
+                player.loop = true;
+                
+                document.getElementById('step-1').style.display = 'none';
+                document.getElementById('step-2').style.display = 'block';
+                initPose();
+            }
+        };
+
+        // 2. DETECCIÓN DE ESQUELETO
+        function initPose() {
+            poseModel = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+            poseModel.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.6 });
+            poseModel.onResults(onResults);
+
+            new Camera(videoElement, {
+                onFrame: async () => { await poseModel.send({image: videoElement}); },
+                width: 640, height: 480
+            }).start();
+        }
+
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                drawMaestroSkeleton(results.poseLandmarks);
+                handleLogic(results.poseLandmarks);
+            }
+        }
+
+        function handleLogic(lm) {
+            // Calibración Express (< 10 segundos)
+            if (calVal < 200) {
+                calVal++;
+                document.getElementById('progress-bar').style.width = (calVal/2) + "%";
+                if (calVal === 100) document.getElementById('cal-text').innerText = "CALIBRANDO ESPALDA...";
+                if (calVal === 200) {
+                    document.getElementById('step-2').style.display = 'none';
+                    document.getElementById('step-3').style.display = 'block';
+                }
+            }
+
+            // Dirección realista
+            if (isPlaying) {
+                const wrist = lm[16]; // Muñeca derecha
+                const currentY = wrist.y;
+                const speed = Math.abs(currentY - lastWristY) * 100;
+                lastWristY = currentY;
+
+                let target = Math.min(Math.max(speed / 8, 0.7), 1.7);
+                if (speed < 0.5) target = 1.0;
+
+                // Inercia fluida (94% anterior, 6% nuevo)
+                orchestratorTempo = (orchestratorTempo * 0.94) + (target * 0.06);
+                player.playbackRate = orchestratorTempo;
+            }
+        }
+
+        function drawMaestroSkeleton(lm) {
+            canvasCtx.lineCap = "round";
+            
+            // Puntos clave
+            const head = lm[0];
+            const lShoulder = lm[11];
+            const rShoulder = lm[12];
+            const lHip = lm[23];
+            const rHip = lm[24];
+
+            const centerShoulder = { x: (lShoulder.x + rShoulder.x)/2, y: (lShoulder.y + rShoulder.y)/2 };
+            const centerHip = { x: (lHip.x + rHip.x)/2, y: (lHip.y + rHip.y)/2 };
+
+            // 1. Línea Central (Cabeza -> Cuello -> Base)
+            canvasCtx.beginPath();
+            canvasCtx.strokeStyle = "rgba(255,255,255,0.6)";
+            canvasCtx.lineWidth = 2;
+            canvasCtx.moveTo(head.x * canvasElement.width, head.y * canvasElement.height);
+            canvasCtx.lineTo(centerShoulder.x * canvasElement.width, centerShoulder.y * canvasElement.height);
+            canvasCtx.lineTo(centerHip.x * canvasElement.width, centerHip.y * canvasElement.height);
+            canvasCtx.stroke();
+
+            // 2. Líneas de Hombros a Manos (Solo los brazos principales)
+            canvasCtx.beginPath();
+            canvasCtx.strokeStyle = "#00ffea";
+            canvasCtx.lineWidth = 5;
+            // Brazo Derecho
+            canvasCtx.moveTo(rShoulder.x * canvasElement.width, rShoulder.y * canvasElement.height);
+            canvasCtx.lineTo(lm[14].x * canvasElement.width, lm[14].y * canvasElement.height); // Codo
+            canvasCtx.lineTo(lm[16].x * canvasElement.width, lm[16].y * canvasElement.height); // Muñeca
+            // Brazo Izquierdo
+            canvasCtx.moveTo(lShoulder.x * canvasElement.width, lShoulder.y * canvasElement.height);
+            canvasCtx.lineTo(lm[13].x * canvasElement.width, lm[13].y * canvasElement.height);
+            canvasCtx.lineTo(lm[15].x * canvasElement.width, lm[15].y * canvasElement.height);
+            canvasCtx.stroke();
+
+            // 3. Punto de Mirada (Cabeza)
+            canvasCtx.fillStyle = "#00ffea";
+            canvasCtx.beginPath();
+            canvasCtx.arc(head.x * canvasElement.width, head.y * canvasElement.height, 8, 0, Math.PI*2);
+            canvasCtx.fill();
+        }
+
+        function runCountdown() {
+            document.getElementById('ui-layer').style.display = 'none';
+            const countDiv = document.getElementById('countdown');
+            countDiv.style.display = 'block';
+            let c = 3;
+            const t = setInterval(() => {
+                c--;
+                countDiv.innerText = c;
+                if (c <= 0) {
+                    clearInterval(t);
+                    countDiv.style.display = 'none';
+                    player.start();
+                    isPlaying = true;
+                }
+            }, 1000);
+        }
+    </script>
+</body>
+</html>
