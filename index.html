@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Maestro - Diversión Fluida</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: sans-serif; }
+        
+        /* MEJORA DE CÁMARA: Más brillo y contraste para mejor detección */
+        .input_video { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            object-fit: cover; transform: scaleX(-1); z-index: 0; 
+            filter: brightness(1.4) contrast(1.2); /* Esto arregla la cámara oscura */
+            opacity: 0.5;
+        }
+
+        .output_canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; transform: scaleX(-1); pointer-events: none; }
+        
+        #setup-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 10;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: #000; color: white; text-align: center;
+        }
+
+        .btn-ready {
+            padding: 20px 40px; background: #00ffea; color: #000;
+            border: none; border-radius: 50px; font-weight: bold; font-size: 1.2em; cursor: pointer;
+        }
+
+        #hud {
+            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+            z-index: 5; color: #00ffea; text-align: center; background: rgba(0,0,0,0.6);
+            padding: 15px 30px; border-radius: 30px; border: 1px solid #00ffea;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <video class="input_video" playsinline muted></video>
+    <canvas class="output_canvas"></canvas>
+
+    <div id="hud">
+        <div style="font-size: 0.8em; letter-spacing: 2px;">TEMPO DE LA ORQUESTA</div>
+        <div id="bpm-txt" style="font-size: 2em; font-weight: bold;">0%</div>
+    </div>
+
+    <div id="setup-screen">
+        <h1 style="color:#00ffea; letter-spacing: 5px;">MAESTRO AI v2</h1>
+        <p style="color:#888;">La cámara ahora tiene brillo automático.<br>Mueve la mano suavemente para dirigir.</p>
+        <input type="file" id="file-input" accept="audio/*" style="display:none">
+        <button class="btn-ready" onclick="document.getElementById('file-input').click()">SUBIR MÚSICA Y EMPEZAR</button>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const fileInput = document.getElementById('file-input');
+        
+        let player, isPlaying = false;
+        let smoothSpeed = 0; // Para suavizado extremo
+        let prevPos = null;
+
+        fileInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                await Tone.start();
+                player = new Tone.Player({
+                    url: url, loop: true,
+                    onload: () => {
+                        player.toDestination();
+                        document.getElementById('setup-screen').style.display = 'none';
+                        document.getElementById('hud').style.display = 'block';
+                        initCamera();
+                        isPlaying = true;
+                    }
+                });
+            }
+        };
+
+        function initCamera() {
+            const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+            hands.setOptions({ 
+                maxNumHands: 1, 
+                modelComplexity: 0, // Modo ultra rápido
+                minDetectionConfidence: 0.4, 
+                minTrackingConfidence: 0.4 
+            });
+            hands.onResults(onResults);
+            new Camera(videoElement, {
+                onFrame: async () => { await hands.send({image: videoElement}); },
+                width: 640, height: 480
+            }).start();
+        }
+
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            let currentSpeed = 0;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // USAMOS LA PALMA (punto 0) para que sea más estable que el dedo
+                const hand = results.multiHandLandmarks[0][0]; 
+                const x = hand.x * canvasElement.width;
+                const y = hand.y * canvasElement.height;
+
+                if (prevPos) {
+                    const dist = Math.sqrt(Math.pow(x - prevPos.x, 2) + Math.pow(y - prevPos.y, 2));
+                    currentSpeed = dist;
+                }
+                prevPos = {x, y};
+
+                // Dibujar feedback simple
+                canvasCtx.fillStyle = "#00ffea";
+                canvasCtx.shadowBlur = 20; canvasCtx.shadowColor = "#00ffea";
+                canvasCtx.beginPath(); canvasCtx.arc(x, y, 15, 0, 2*Math.PI); canvasCtx.fill();
+            } else {
+                currentSpeed = 0;
+            }
+
+            // --- EL SECRETO DEL SUAVIZADO ---
+            // Mezclamos la velocidad nueva con la anterior muy lentamente (Inercia)
+            smoothSpeed = (smoothSpeed * 0.96) + (currentSpeed * 0.04);
+
+            if (isPlaying && player.loaded) {
+                // Mapeo mucho más generoso para que sea fácil divertirse
+                let rate = Math.min(Math.max(smoothSpeed / 8, 0.4), 2.0);
+                
+                // Si la mano se mueve casi nada, el tempo es 1 (normal)
+                if (smoothSpeed < 1) rate = 1.0; 
+
+                player.playbackRate = rate;
+                
+                // Actualizar interfaz
+                document.getElementById('bpm-txt').innerText = Math.round(rate * 100) + "%";
+            }
+        }
+    </script>
+</body>
+</html>
