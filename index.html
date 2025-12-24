@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orchestra V35 - Fast Calibration</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        :root { --neon: #00ffea; }
+        body { margin: 0; background: #000; color: var(--neon); font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        video { position: fixed; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.8; }
+        canvas { position: fixed; width: 100%; height: 100%; z-index: 5; transform: scaleX(-1); pointer-events: none; }
+        .screen { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.9); text-align: center; }
+        .card { background: #111; padding: 30px; border: 2px solid var(--neon); border-radius: 20px; width: 80%; max-width: 400px; }
+        .btn { background: var(--neon); color: #000; border: none; padding: 15px 30px; margin: 10px; border-radius: 10px; font-weight: bold; cursor: pointer; }
+        #progress-bar { width: 100%; height: 12px; background: #222; border-radius: 6px; overflow: hidden; margin: 15px 0; }
+        #progress-fill { width: 0%; height: 100%; background: var(--neon); transition: width 0.2s; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <video id="input_video" playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
+
+    <div id="menu-screen" class="screen">
+        <div class="card">
+            <h1>ORCHESTRA V35</h1>
+            <input type="file" id="audio-file" accept="audio/*" style="margin-bottom: 20px;">
+            <div style="display:flex; gap:10px;">
+                <button class="btn" onclick="startFlow('maestro')">MAESTRO</button>
+                <button class="btn" onclick="startFlow('libre')">LIBRE</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="calib-screen" class="screen hidden">
+        <div class="card">
+            <h2 id="step-title">CALIBRANDO...</h2>
+            <div id="progress-bar"><div id="progress-fill"></div></div>
+            <p id="step-desc">Analizando cuerpo...</p>
+            <div id="confirm-box" class="hidden">
+                <p>¿Calibración correcta?</p>
+                <button class="btn" onclick="finalizeCalib(true)">SÍ</button>
+                <button class="btn" style="background:#f44" onclick="finalizeCalib(false)">NO</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="hit-screen" class="screen hidden" style="background:transparent">
+        <h1 style="font-size: 3em; text-shadow: 0 0 20px #000;">DA 3 GOLPES SECOS</h1>
+        <div id="hit-count" style="font-size: 5em;">0 / 3</div>
+    </div>
+
+    <script>
+        let state = { mode: '', step: 0, calibDone: false, hits: 0, lastY: 0 };
+        const video = document.getElementById('input_video');
+        const canvas = document.getElementById('output_canvas');
+        const ctx = canvas.getContext('2d');
+        let player, pose;
+
+        const steps = [
+            { name: "HOMBROS", parts: [11, 12] },
+            { name: "BRAZOS Y MANOS", parts: [13, 14, 15, 16] },
+            { name: "TORSO", parts: [23, 24] }, // Optimizado para ser inmediato
+            { name: "PIES", parts: [27, 28] }
+        ];
+
+        async function startFlow(mode) {
+            if(!document.getElementById('audio-file').files[0]) return alert("Sube música");
+            state.mode = mode;
+            const url = URL.createObjectURL(document.getElementById('audio-file').files[0]);
+            player = new Tone.Player(url).toDestination();
+            player.onstop = () => location.reload();
+
+            document.getElementById('menu-screen').classList.add('hidden');
+            document.getElementById('calib-screen').classList.remove('hidden');
+            
+            pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+            pose.setOptions({ modelComplexity: 1, minDetectionConfidence: 0.6 });
+            pose.onResults(onResults);
+            new Camera(video, { onFrame: async () => await pose.send({image: video}), width: 640, height: 480 }).start();
+        }
+
+        function onResults(results) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+            if (!results.poseLandmarks) return;
+
+            drawSkeleton(results.poseLandmarks);
+
+            if (!state.calibDone) {
+                processCalibration(results.poseLandmarks);
+            } else {
+                processConcert(results.poseLandmarks);
+            }
+        }
+
+        function processCalibration(lm) {
+            let current = steps[state.step];
+            // Revisamos si las partes del paso actual son visibles
+            let visible = current.parts.every(p => lm[p] && lm[p].visibility > 0.6);
+
+            if (visible) {
+                state.step++;
+                let progress = (state.step / steps.length) * 100;
+                document.getElementById('progress-fill').style.width = progress + "%";
+                if(state.step < steps.length) {
+                    document.getElementById('step-title').innerText = steps[state.step].name;
+                } else {
+                    document.getElementById('confirm-box').classList.remove('hidden');
+                }
+            }
+        }
+
+        function finalizeCalib(ok) {
+            if(ok) {
+                state.calibDone = true;
+                document.getElementById('calib-screen').classList.add('hidden');
+                document.getElementById('hit-screen').classList.remove('hidden');
+            } else {
+                state.step = 0;
+                document.getElementById('progress-fill').style.width = "0%";
+                document.getElementById('confirm-box').classList.add('hidden');
+            }
+        }
+
+        function processConcert(lm) {
+            const hand = lm[20];
+            let vel = Math.abs(hand.y - state.lastY) * 100;
+
+            if (state.hits < 3) {
+                if (vel > 6) { // Sensibilidad de golpe aumentada
+                    state.hits++;
+                    document.getElementById('hit-count').innerText = `${state.hits} / 3`;
+                    if (navigator.vibrate) navigator.vibrate(50);
+                    if (state.hits === 3) {
+                        document.getElementById('hit-screen').classList.add('hidden');
+                        player.start();
+                    }
+                }
+            } else {
+                // Lógica de dirección
+                if (vel > 0.4) {
+                    player.playbackRate = state.mode === 'maestro' ? (0.6 + vel/10) : 1.0;
+                    player.mute = false;
+                } else {
+                    player.mute = true;
+                }
+            }
+            state.lastY = hand.y;
+        }
+
+        function drawSkeleton(lm) {
+            ctx.strokeStyle = var(--neon); ctx.lineWidth = 4;
+            const pairs = [[11,12], [11,13], [13,15], [12,14], [14,16], [11,23], [12,24], [23,24], [23,25], [24,26], [25,27], [26,28]];
+            pairs.forEach(([a,b]) => {
+                ctx.beginPath();
+                ctx.moveTo(lm[a].x * canvas.width, lm[a].y * canvas.height);
+                ctx.lineTo(lm[b].x * canvas.width, lm[b].y * canvas.height);
+                ctx.stroke();
+            });
+        }
+    </script>
+</body>
+</html>
