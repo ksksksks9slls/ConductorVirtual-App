@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Orchestra</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: sans-serif; }
+        .input_video { position: fixed; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.4; z-index: 0; }
+        .output_canvas { position: fixed; width: 100%; height: 100%; z-index: 1; transform: scaleX(-1); }
+        
+        #ui-layer { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.8); color: white; text-align: center; }
+        .panel { background: #111; padding: 40px; border-radius: 40px; border: 1px solid #00ffea; width: 80%; max-width: 350px; }
+        .btn { padding: 18px; background: #00ffea; color: #000; border: none; border-radius: 50px; font-weight: bold; cursor: pointer; width: 100%; text-transform: uppercase; margin-top: 20px; }
+        
+        /* Versión en esquina muy pequeña */
+        #ver-tag { position: fixed; bottom: 5px; right: 8px; font-size: 0.6em; color: rgba(255,255,255,0.3); z-index: 20; pointer-events: none; }
+        
+        #hud { position: fixed; top: 20px; left: 20px; color: #00ffea; font-family: monospace; z-index: 5; display: none; text-shadow: 0 0 5px #000; }
+    </style>
+</head>
+<body>
+
+    <video class="input_video" playsinline muted></video>
+    <canvas class="output_canvas"></canvas>
+    <div id="ver-tag">v17.1</div>
+    <div id="hud">TEMPO: 100% | CLARIDAD: 100%</div>
+
+    <div id="ui-layer">
+        <div id="panel-content" class="panel">
+            <h1 style="letter-spacing: 5px; margin: 0;">ORCHESTRA</h1>
+            <div id="actions">
+                <input type="file" id="audio-input" accept="audio/*" style="display:none">
+                <button class="btn" id="btn-start" onclick="document.getElementById('audio-input').click()">CARGAR OBRA</button>
+            </div>
+            <p id="status-msg" style="font-size: 0.8em; margin-top: 15px; opacity: 0.6;">ESPERANDO PARTITURA</p>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const audioInput = document.getElementById('audio-input');
+
+        let player, filter, isPlaying = false, flowState = "START";
+        let calProgress = 0, golpesDados = 0, lastY = 0, subiendo = false;
+        let lerpTempo = 1.0, quality = 1.0;
+
+        const woodTap = new Tone.MembraneSynth().toDestination();
+
+        audioInput.onchange = async (e) => {
+            if (e.target.files[0]) {
+                await Tone.start();
+                // Filtro de calidad (Lowpass)
+                filter = new Tone.Filter(20000, "lowpass").toDestination();
+                player = new Tone.Player(URL.createObjectURL(e.target.files[0])).connect(filter);
+                
+                document.getElementById('btn-start').style.display = "none";
+                flowState = "SCANNING";
+                initPose();
+            }
+        };
+
+        function updateUI() {
+            const actions = document.getElementById('actions');
+            if (flowState === "CONFIRMATION") {
+                document.getElementById('status-msg').style.display = "none";
+                actions.innerHTML = `
+                    <p>CALIBRACIÓN COMPLETA</p>
+                    <button class="btn" onclick="flowState='RITUAL'; updateUI();">EMPEZAR</button>
+                    <button class="btn" style="background:#333;color:white" onclick="calProgress=0;flowState='SCANNING';updateUI();">REPETIR</button>
+                `;
+            } else if (flowState === "RITUAL") {
+                document.getElementById('ui-layer').style.display = "none";
+                document.getElementById('hud').style.display = "block";
+            }
+        }
+
+        function initPose() {
+            const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+            pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.8 });
+            pose.onResults(onResults);
+            new Camera(videoElement, { onFrame: async () => { await pose.send({image: videoElement}); }, width: 640, height: 480 }).start();
+        }
+
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                const lm = results.poseLandmarks;
+                
+                // Dibujo de esqueleto (Anclaje hombro-hombro primero)
+                drawSkeleton(lm);
+
+                if (flowState === "SCANNING") {
+                    calProgress += 1;
+                    document.getElementById('status-msg').innerText = `ESCANEO: ${Math.min(100, Math.round(calProgress))}%`;
+                    if (calProgress >= 100) { flowState = "CONFIRMATION"; updateUI(); }
+                }
+
+                const hand = lm[16];
+                if (flowState === "RITUAL" || isPlaying) {
+                    if (!isPlaying && hand.y < 0.45) {
+                        canvasCtx.fillStyle = "#00ffea";
+                        canvasCtx.font = "25px Arial";
+                        canvasCtx.textAlign = "center";
+                        canvasCtx.fillText("3 GOLPES HACIA ABAJO", canvasElement.width/2, 80);
+                        
+                        if (lastY < hand.y - 0.08 && !subiendo) {
+                            woodTap.triggerAttackRelease("G2", "16n");
+                            golpesDados++; subiendo = true;
+                            if (golpesDados >= 3) { player.start(); isPlaying = true; }
+                        }
+                        if (hand.y < lastY - 0.05) subiendo = false;
+                    }
+
+                    if (isPlaying) {
+                        const speed = Math.abs(hand.y - lastY) * 100;
+                        
+                        // Tempo dinámico
+                        let targetT = 0.5 + (speed / 6);
+                        lerpTempo = (lerpTempo * 0.9) + (Math.min(Math.max(targetT, 0.6), 2.2) * 0.1);
+                        player.playbackRate = lerpTempo;
+
+                        // LÓGICA DE GESTOS (CALIDAD SONORA)
+                        // Si la velocidad es muy baja o nula, la "calidad" baja
+                        let qTarget = speed > 0.5 ? 1.0 : 0.2;
+                        quality = (quality * 0.95) + (qTarget * 0.05);
+                        
+                        // Aplicar filtro: a menos calidad, sonido más sordo/borroso
+                        filter.frequency.value = 200 + (quality * 19800);
+                        
+                        document.getElementById('hud').innerText = `TEMPO: ${Math.round(lerpTempo * 100)}% | CALIDAD: ${Math.round(quality * 100)}%`;
+                    }
+                    lastY = hand.y;
+                }
+            }
+        }
+
+        function drawSkeleton(lm) {
+            const p = (i) => ({ x: lm[i].x * canvasElement.width, y: lm[i].y * canvasElement.height });
+            canvasCtx.strokeStyle = "white";
+            canvasCtx.lineWidth = 5;
+            canvasCtx.lineCap = "round";
+
+            const line = (a, b) => {
+                canvasCtx.beginPath(); canvasCtx.moveTo(p(a).x, p(a).y); canvasCtx.lineTo(p(b).x, p(b).y); canvasCtx.stroke();
+            };
+
+            // Estructura centrada en hombros
+            line(11, 12); // Hombro a hombro
+            line(12, 14); line(14, 16); line(16, 20); // Brazo Derecho
+            line(11, 13); line(13, 15); line(15, 19); // Brazo Izquierdo
+            
+            // Tronco
+            const cuello = { x: (p(11).x + p(12).x)/2, y: (p(11).y + p(12).y)/2 };
+            const pelvis = { x: (p(23).x + p(24).x)/2, y: (p(23).y + p(24).y)/2 };
+            canvasCtx.beginPath(); canvasCtx.moveTo(cuello.x, cuello.y); canvasCtx.lineTo(pelvis.x, pelvis.y); canvasCtx.stroke();
+
+            // Puntos de control
+            [11, 12, 14, 16, 20, 13, 15, 19].forEach(i => {
+                canvasCtx.fillStyle = "#00ffea";
+                canvasCtx.beginPath(); canvasCtx.arc(p(i).x, p(i).y, 5, 0, 7); canvasCtx.fill();
+            });
+        }
+    </script>
+</body>
+</html>
