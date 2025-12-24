@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orchestra Platinum v38.0</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100;300;600&display=swap" rel="stylesheet">
+    <style>
+        :root { --accent: #00ffea; --glass: rgba(10, 10, 10, 0.9); }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; color: white; font-family: 'Inter', sans-serif; overflow: hidden; }
+
+        /* Video y Canvas */
+        #input_video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.8; z-index: 1; display: none; }
+        #output_canvas { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 5; transform: scaleX(-1); pointer-events: none; }
+
+        /* Pantallas */
+        .screen { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; justify-content: center; align-items: center; backdrop-filter: blur(25px); transition: 0.5s; }
+        .hidden { opacity: 0; pointer-events: none; visibility: hidden; }
+        .glass-card { background: var(--glass); padding: 40px; border-radius: 30px; border: 1px solid rgba(255,255,255,0.1); text-align: center; width: 85%; max-width: 400px; }
+        
+        /* Tipografía y Botones */
+        h1 { font-weight: 100; letter-spacing: 10px; text-transform: uppercase; font-size: 1.2rem; }
+        .btn { background: white; color: black; border: none; padding: 16px; border-radius: 12px; font-weight: 600; letter-spacing: 2px; cursor: pointer; transition: 0.3s; width: 100%; margin: 10px 0; text-transform: uppercase; font-size: 0.7rem; }
+        .btn:disabled { opacity: 0.2; }
+        .btn-outline { background: transparent; color: white; border: 1px solid rgba(255,255,255,0.3); }
+
+        /* HUD */
+        #app-version { position: fixed; bottom: 10px; right: 15px; font-size: 0.5rem; opacity: 0.3; letter-spacing: 2px; z-index: 200; }
+        #settings-btn { position: fixed; top: 20px; right: 20px; z-index: 210; cursor: pointer; opacity: 0.6; font-size: 1.5rem; }
+        #hit-counter { font-size: 8rem; font-weight: 100; margin: 20px 0; }
+        
+        /* Barra de progreso */
+        .progress-bar { width: 100%; height: 2px; background: rgba(255,255,255,0.1); margin: 20px 0; position: relative; }
+        .progress-fill { position: absolute; height: 2px; background: var(--accent); width: 0%; transition: 0.4s; box-shadow: 0 0 10px var(--accent); }
+    </style>
+</head>
+<body>
+
+    <video id="input_video" playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
+    <div id="app-version">V38.0 PLATINUM GLOBAL</div>
+    <div id="settings-btn" onclick="toggleSettings()">⚙️</div>
+
+    <div id="scr-menu" class="screen">
+        <div class="glass-card">
+            <h1 id="txt-title">ORCHESTRA</h1>
+            <input type="file" id="audio-file" accept="audio/*" style="display:none">
+            <button id="file-btn" class="btn btn-outline" onclick="document.getElementById('audio-file').click()">SELECT AUDIO</button>
+            <div id="file-name" style="font-size: 0.5rem; margin: 10px 0; opacity: 0.5;"></div>
+            <button id="btn-maestro" class="btn" onclick="initApp('maestro')" disabled>MAESTRO MODE</button>
+            <button id="btn-libre" class="btn btn-outline" onclick="initApp('libre')" disabled>FREE MODE</button>
+        </div>
+    </div>
+
+    <div id="scr-settings" class="screen hidden" style="z-index: 300;">
+        <div class="glass-card">
+            <h2 id="txt-settings">SETTINGS</h2>
+            <p>Language / Idioma</p>
+            <select id="lang-select" class="btn btn-outline" onchange="changeLang()">
+                <option value="es">Español</option>
+                <option value="en">English</option>
+            </select>
+            <button class="btn" onclick="toggleSettings()">CLOSE</button>
+        </div>
+    </div>
+
+    <div id="scr-calib" class="screen hidden">
+        <div class="glass-card">
+            <p id="txt-scan" style="font-size: 0.6rem; letter-spacing: 3px; opacity: 0.6;">BIO-SYNC</p>
+            <h2 id="step-name" style="font-weight: 300;">HOMBROS</h2>
+            <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+            <div id="calib-check" class="hidden">
+                <p id="txt-confirm">¿Calibración correcta?</p>
+                <button class="btn" onclick="goToHits()">CONTINUE</button>
+                <button class="btn btn-outline" onclick="location.reload()">RETRY</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="scr-hits" class="screen hidden" style="background:transparent; backdrop-filter:none;">
+        <p id="txt-hit-desc" style="letter-spacing: 8px; font-weight: 100;">DA TRES GOLPES SECOS</p>
+        <div id="hit-counter">0</div>
+        <button id="skip-btn" class="btn btn-outline hidden" style="width: 150px;" onclick="startConcert()">SKIP</button>
+    </div>
+
+    <script>
+        const i18n = {
+            es: { title: "ORCHESTRA", select: "SELECCIONAR OBRA", maestro: "MODO MAESTRO", libre: "MODO LIBRE", settings: "AJUSTES", scan: "BIO-SYNC", confirm: "¿CALIBRACIÓN CORRECTA?", hits: "DA TRES GOLPES SECOS", skip: "SALTAR", hombros: "HOMBROS", brazos: "BRAZOS", torso: "TORSO", pies: "PIES" },
+            en: { title: "ORCHESTRA", select: "SELECT AUDIO", maestro: "MAESTRO MODE", libre: "FREE MODE", settings: "SETTINGS", scan: "BIO-SYNC", confirm: "CALIBRATION CORRECT?", hits: "GIVE THREE SHARP BEATS", skip: "SKIP", hombros: "SHOULDERS", brazos: "ARMS", torso: "TORSO", pies: "FEET" }
+        };
+
+        let lang = "es";
+        let state = { mode: '', step: 0, hits: 0, lastY: 0, isReady: false, started: false, hitStartTime: 0 };
+        const video = document.getElementById('input_video');
+        const canvas = document.getElementById('output_canvas');
+        const ctx = canvas.getContext('2d');
+        let player, pose, camera;
+
+        function changeLang() {
+            lang = document.getElementById('lang-select').value;
+            updateUI();
+        }
+
+        function updateUI() {
+            const t = i18n[lang];
+            document.getElementById('txt-title').innerText = t.title;
+            if(!player) document.getElementById('file-btn').innerText = t.select;
+            document.getElementById('btn-maestro').innerText = t.maestro;
+            document.getElementById('btn-libre').innerText = t.libre;
+            document.getElementById('txt-settings').innerText = t.settings;
+            document.getElementById('txt-confirm').innerText = t.confirm;
+            document.getElementById('txt-hit-desc').innerText = t.hits;
+            document.getElementById('skip-btn').innerText = t.skip;
+        }
+
+        document.getElementById('audio-file').onchange = (e) => {
+            if (e.target.files[0]) {
+                document.getElementById('file-btn').innerText = "✓ " + (lang === "es" ? "LISTO" : "READY");
+                document.getElementById('file-name').innerText = e.target.files[0].name.toUpperCase();
+                document.getElementById('btn-maestro').disabled = false;
+                document.getElementById('btn-libre').disabled = false;
+            }
+        };
+
+        async function initApp(mode) {
+            state.mode = mode;
+            await Tone.start();
+            player = new Tone.Player(URL.createObjectURL(document.getElementById('audio-file').files[0])).toDestination();
+            player.onstop = () => location.reload();
+            document.getElementById('scr-menu').classList.add('hidden');
+            document.getElementById('scr-calib').classList.remove('hidden');
+            video.style.display = 'block';
+            pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+            pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.6 });
+            pose.onResults(onResults);
+            camera = new Camera(video, { onFrame: async () => await pose.send({image: video}), width: 640, height: 480 });
+            camera.start();
+        }
+
+        function onResults(results) {
+            canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (results.poseLandmarks) {
+                drawSkeleton(results.poseLandmarks);
+                if (!state.isReady) runCalib(results.poseLandmarks);
+                else if (state.started) runMusic(results.poseLandmarks);
+                else detectHits(results.poseLandmarks);
+            }
+        }
+
+        function runCalib(lm) {
+            const steps = [i18n[lang].hombros, i18n[lang].brazos, i18n[lang].torso, i18n[lang].pies];
+            const ids = [[11,12], [13,14,15,16], [23,24], [27,28]];
+            if (ids[state.step].every(id => lm[id].visibility > 0.8)) {
+                state.step++;
+                document.getElementById('progress-fill').style.width = (state.step/4)*100 + "%";
+                if (state.step < 4) document.getElementById('step-name').innerText = steps[state.step];
+                else { document.getElementById('calib-check').classList.remove('hidden'); state.isReady = true; }
+            }
+        }
+
+        function goToHits() {
+            document.getElementById('scr-calib').classList.add('hidden');
+            document.getElementById('scr-hits').classList.remove('hidden');
+            state.hitStartTime = Date.now();
+        }
+
+        function detectHits(lm) {
+            let vel = Math.abs(lm[20].y - state.lastY) * 100;
+            // Temporizador para botón SKIP (10 seg)
+            if (Date.now() - state.hitStartTime > 10000) document.getElementById('skip-btn').classList.remove('hidden');
+
+            if (vel > 7) { // Súper sensible
+                state.hits++;
+                document.getElementById('hit-counter').innerText = state.hits;
+                if (state.hits >= 3) startConcert();
+            }
+            state.lastY = lm[20].y;
+        }
+
+        function startConcert() {
+            state.started = true;
+            document.getElementById('scr-hits').classList.add('hidden');
+            player.start();
+        }
+
+        function runMusic(lm) {
+            let hand = lm[20];
+            let vel = Math.abs(hand.y - state.lastY) * 100;
+            // Control de volumen por altura (Y bajo es volumen alto)
+            player.volume.value = Tone.gainToDb(1.2 - hand.y); 
+            if (vel > 0.3) {
+                player.playbackRate = state.mode === 'maestro' ? (0.6 + vel/10) : 1.0;
+                player.mute = false;
+            } else { player.mute = true; }
+            state.lastY = hand.y;
+        }
+
+        function drawSkeleton(lm) {
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.4)"; ctx.lineWidth = 2;
+            const con = [[11,12], [11,13], [13,15], [12,14], [14,16], [11,23], [12,24], [23,24], [23,25], [24,26], [25,27], [26,28]];
+            con.forEach(([a,b]) => {
+                ctx.beginPath(); ctx.moveTo(lm[a].x*canvas.width, lm[a].y*canvas.height);
+                ctx.lineTo(lm[b].x*canvas.width, lm[b].y*canvas.height); ctx.stroke();
+            });
+            ctx.fillStyle = "#00ffea";
+            lm.forEach(p => { if(p.visibility > 0.7) { ctx.beginPath(); ctx.arc(p.x*canvas.width, p.y*canvas.height, 4, 0, 7); ctx.fill(); }});
+        }
+
+        function toggleSettings() { document.getElementById('scr-settings').classList.toggle('hidden'); }
+        updateUI();
+    </script>
+</body>
+</html>
