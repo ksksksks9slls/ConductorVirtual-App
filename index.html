@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Orchestra V22.1 Light</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: sans-serif; }
+        .input_video { position: fixed; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.2; filter: brightness(0.5); }
+        .output_canvas { position: fixed; width: 100%; height: 100%; z-index: 5; transform: scaleX(-1); }
+        #ui-layer { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.8); color: white; text-align: center; }
+        .panel { background: #111; padding: 30px; border-radius: 20px; border: 1px solid #00ffea; width: 80%; max-width: 350px; }
+        .btn { padding: 15px; background: #00ffea; color: #000; border: none; border-radius: 30px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 10px; }
+        #hud { position: fixed; top: 20px; left: 20px; color: #00ffea; font-family: monospace; z-index: 6; display: none; }
+    </style>
+</head>
+<body>
+
+    <video class="input_video" playsinline muted></video>
+    <canvas class="output_canvas"></canvas>
+    <div id="hud">TEMPO: 100% | SECCIÓN: CENTRO</div>
+
+    <div id="ui-layer">
+        <div class="panel">
+            <h2>ORCHESTRA LIGHT</h2>
+            <p style="font-size: 0.8em; opacity: 0.7;">Versión optimizada para rendimiento</p>
+            <input type="file" id="audio-input" accept="audio/*" style="display:none">
+            <button class="btn" onclick="document.getElementById('audio-input').click()">CARGAR MP3</button>
+            <button class="btn" style="background:none; color:#00ffea; border:1px solid #00ffea;" onclick="startFree()">MODO LIBRE</button>
+            <p id="status" style="margin-top:15px; font-size: 0.7em;">Esperando cámara...</p>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const audioInput = document.getElementById('audio-input');
+
+        let player, panner, reverb, isPlaying = false, flowState = "START";
+        let lastY = 0, lerpTempo = 1.0, batutaVisible = false;
+
+        async function initAudio(url = null) {
+            await Tone.start();
+            reverb = new Tone.Reverb(2).toDestination();
+            panner = new Tone.Panner(0).connect(reverb);
+            if(url) player = new Tone.Player(url).connect(panner);
+            
+            flowState = "PLAYING";
+            document.getElementById('ui-layer').style.display = "none";
+            document.getElementById('hud').style.display = "block";
+            if(!url) isPlaying = true;
+            initPose();
+        }
+
+        audioInput.onchange = (e) => initAudio(URL.createObjectURL(e.target.files[0]));
+        function startFree() { initAudio(); }
+
+        function initPose() {
+            const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+            pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5 }); // Complexity 0 es la más rápida
+            pose.onResults(onResults);
+            new Camera(videoElement, { onFrame: async () => await pose.send({image: videoElement}), width: 640, height: 480 }).start();
+        }
+
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                const lm = results.poseLandmarks;
+                const handR = { x: lm[20].x * canvasElement.width, y: lm[20].y * canvasElement.height };
+                const wristR = { x: lm[16].x * canvasElement.width, y: lm[16].y * canvasElement.height };
+
+                // 1. DIBUJAR ATRIL (2D Minimalista)
+                drawAtril();
+
+                // 2. LÓGICA DE AGARRE Y BATUTA
+                const distGrip = Math.hypot(lm[20].x - lm[18].x, lm[20].y - lm[18].y);
+                batutaVisible = distGrip < 0.06;
+
+                if (batutaVisible) {
+                    drawBatuta(wristR, handR);
+                }
+
+                // 3. CONTROL DE AUDIO
+                if (flowState === "PLAYING") {
+                    const speed = Math.abs(lm[20].y - lastY) * 100;
+                    
+                    if(player && isPlaying) {
+                        // Tempo Inercia
+                        let targetT = 0.6 + (speed / 6);
+                        lerpTempo = (lerpTempo * 0.9) + (Math.min(Math.max(targetT, 0.7), 1.8) * 0.1);
+                        player.playbackRate = lerpTempo;
+
+                        // Paneo (Secciones)
+                        panner.pan.rampTo((lm[20].x * 2) - 1, 0.2);
+                        
+                        document.getElementById('hud').innerText = `TEMPO: ${Math.round(lerpTempo*100)}% | SECCIÓN: ${lm[20].x < 0.4 ? 'CUERDAS' : 'METALES'}`;
+                    }
+
+                    // Inicio por golpes
+                    if(player && !isPlaying && lm[16].y < 0.5 && speed > 5) {
+                        player.start(); isPlaying = true;
+                    }
+                }
+                lastY = lm[20].y;
+            }
+        }
+
+        function drawBatuta(base, tip) {
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(base.x, base.y);
+            // Alargamos la línea para que parezca una batuta
+            const dx = tip.x - base.x;
+            const dy = tip.y - base.y;
+            canvasCtx.lineTo(base.x + dx * 2, base.y + dy * 2);
+            canvasCtx.strokeStyle = "white";
+            canvasCtx.lineWidth = 4;
+            canvasCtx.lineCap = "round";
+            canvasCtx.shadowBlur = 10;
+            canvasCtx.shadowColor = "#00ffea";
+            canvasCtx.stroke();
+            canvasCtx.shadowBlur = 0;
+        }
+
+        function drawAtril() {
+            canvasCtx.fillStyle = "rgba(20, 20, 20, 0.8)";
+            const w = canvasElement.width * 0.4;
+            canvasCtx.fillRect(canvasElement.width/2 - w/2, canvasElement.height - 150, w, 100);
+            canvasCtx.strokeStyle = "#00ffea";
+            canvasCtx.strokeRect(canvasElement.width/2 - w/2, canvasElement.height - 150, w, 100);
+        }
+    </script>
+</body>
+</html>
