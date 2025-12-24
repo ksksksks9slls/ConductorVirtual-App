@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orchestra Platinum - v37.0</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100;300;600&display=swap" rel="stylesheet">
+    <style>
+        :root { --accent: #00ffea; --glass: rgba(10, 10, 10, 0.7); }
+        body { margin: 0; background: #000; color: white; font-family: 'Inter', sans-serif; overflow: hidden; }
+        
+        /* Imagen del usuario al 0.8 de opacidad */
+        #input_video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.8; z-index: 1; display: none; }
+        canvas { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 2; transform: scaleX(-1); pointer-events: none; }
+
+        .screen { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; justify-content: center; align-items: center; backdrop-filter: blur(20px); transition: all 0.8s ease; }
+        .hidden { opacity: 0; pointer-events: none; visibility: hidden; transform: scale(1.1); }
+
+        .glass-card { background: var(--glass); padding: 50px; border-radius: 40px; border: 1px solid rgba(255,255,255,0.05); text-align: center; width: 80%; max-width: 400px; box-shadow: 0 40px 100px rgba(0,0,0,0.8); }
+        
+        h1 { font-weight: 100; letter-spacing: 12px; text-transform: uppercase; margin-bottom: 40px; font-size: 1.2rem; color: rgba(255,255,255,0.9); }
+        .btn { background: white; color: black; border: none; padding: 18px; border-radius: 12px; font-weight: 600; letter-spacing: 2px; cursor: pointer; transition: 0.4s; width: 100%; margin: 12px 0; text-transform: uppercase; font-size: 0.8rem; }
+        .btn:hover { background: var(--accent); letter-spacing: 4px; }
+        .btn-secondary { background: transparent; color: white; border: 1px solid rgba(255,255,255,0.2); }
+
+        /* Calibración Estilizada */
+        .progress-line { width: 100%; height: 1px; background: rgba(255,255,255,0.1); margin: 40px 0; position: relative; }
+        #progress-fill { position: absolute; height: 3px; top: -1px; background: var(--accent); width: 0%; transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1); box-shadow: 0 0 15px var(--accent); }
+        #step-title { font-weight: 300; font-size: 1.5rem; letter-spacing: 2px; }
+        
+        /* Versión en la esquina */
+        #app-version { position: fixed; bottom: 15px; right: 20px; font-size: 0.6rem; letter-spacing: 2px; opacity: 0.3; z-index: 200; pointer-events: none; }
+
+        /* Contador de golpes elegante */
+        #hit-count { font-size: 10rem; font-weight: 100; opacity: 0.8; }
+    </style>
+</head>
+<body>
+
+    <video id="input_video" playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
+    <div id="app-version">V37.0 PLATINUM</div>
+
+    <div id="scr-menu" class="screen">
+        <div class="glass-card">
+            <h1>Orchestra</h1>
+            <input type="file" id="audio-file" accept="audio/*" style="display:none">
+            <button class="btn btn-secondary" onclick="document.getElementById('audio-file').click()">SELECCIONAR OBRA</button>
+            <div id="file-info" style="font-size: 0.6rem; margin: 15px 0; opacity: 0.5;">NINGÚN ARCHIVO SELECCIONADO</div>
+            <button class="btn" onclick="launch('maestro')">MODO MAESTRO</button>
+            <button class="btn btn-secondary" onclick="launch('libre')">MODO LIBRE</button>
+        </div>
+    </div>
+
+    <div id="scr-calib" class="screen hidden">
+        <div class="glass-card">
+            <p style="font-size: 0.7rem; letter-spacing: 4px; opacity: 0.5;">BIO-SCAN</p>
+            <h2 id="step-title">Hombros</h2>
+            <div class="progress-line"><div id="progress-fill"></div></div>
+            <div id="calib-ui" class="hidden">
+                <p style="font-size: 0.8rem; margin-bottom: 20px;">¿Sincronización óptima?</p>
+                <button class="btn" onclick="doneCalib(true)">SÍ, MAESTRO</button>
+                <button class="btn btn-secondary" onclick="doneCalib(false)">REPETIR</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="scr-hits" class="screen hidden" style="background:transparent; backdrop-filter: none;">
+        <p style="letter-spacing: 10px; font-weight: 100;">MARQUE EL TIEMPO</p>
+        <div id="hit-count">0</div>
+    </div>
+
+    <script>
+        let state = { mode: '', step: 0, hits: 0, lastY: 0, active: false };
+        const video = document.getElementById('input_video');
+        const canvas = document.getElementById('output_canvas');
+        const ctx = canvas.getContext('2d');
+        let player, pose, camera;
+
+        const workflow = [
+            { n: "Hombros", pts: [11, 12] },
+            { n: "Brazos", pts: [13, 14, 15, 16] },
+            { n: "Torso", pts: [23, 24] },
+            { n: "Pies", pts: [27, 28] }
+        ];
+
+        document.getElementById('audio-file').onchange = (e) => {
+            document.getElementById('file-info').innerText = e.target.files[0].name.toUpperCase();
+        };
+
+        async function launch(m) {
+            if (!document.getElementById('audio-file').files[0]) return;
+            state.mode = m;
+            await Tone.start();
+            player = new Tone.Player(URL.createObjectURL(document.getElementById('audio-file').files[0])).toDestination();
+            player.onstop = () => location.reload();
+
+            document.getElementById('scr-menu').classList.add('hidden');
+            document.getElementById('scr-calib').classList.remove('hidden');
+            video.style.display = 'block';
+
+            pose = new Pose({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`});
+            pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.7 });
+            pose.onResults(onResults);
+            
+            camera = new Camera(video, { onFrame: async () => await pose.send({image: video}), width: 640, height: 480 });
+            camera.start();
+        }
+
+        function onResults(res) {
+            canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!res.poseLandmarks) return;
+
+            renderSkeleton(res.poseLandmarks);
+
+            if (!state.calibDone) {
+                let curr = workflow[state.step];
+                if (curr.pts.every(p => res.poseLandmarks[p].visibility > 0.8)) {
+                    state.step++;
+                    document.getElementById('progress-fill').style.width = (state.step/workflow.length)*100 + "%";
+                    if (state.step < workflow.length) {
+                        document.getElementById('step-title').innerText = workflow[state.step].n;
+                    } else {
+                        document.getElementById('calib-ui').classList.remove('hidden');
+                    }
+                }
+            } else {
+                handleMusic(res.poseLandmarks);
+            }
+        }
+
+        function doneCalib(ok) {
+            if (ok) {
+                state.calibDone = true;
+                document.getElementById('scr-calib').classList.add('hidden');
+                document.getElementById('scr-hits').classList.remove('hidden');
+            } else {
+                state.step = 0;
+                document.getElementById('progress-fill').style.width = "0%";
+                document.getElementById('calib-ui').classList.add('hidden');
+            }
+        }
+
+        function handleMusic(lm) {
+            const hand = lm[20];
+            let vel = Math.abs(hand.y - state.lastY) * 100;
+
+            if (state.hits < 3) {
+                if (vel > 8) {
+                    state.hits++;
+                    document.getElementById('hit-count').innerText = state.hits;
+                    if (state.hits === 3) {
+                        document.getElementById('scr-hits').classList.add('hidden');
+                        player.start();
+                    }
+                }
+            } else {
+                if (vel > 0.5) {
+                    player.playbackRate = state.mode === 'maestro' ? (0.6 + vel/10) : 1.0;
+                    player.mute = false;
+                } else { player.mute = true; }
+            }
+            state.lastY = hand.y;
+        }
+
+        function renderSkeleton(lm) {
+            ctx.strokeStyle = "rgba(255,255,255,0.2)";
+            ctx.lineWidth = 1;
+            const bones = [[11,12], [11,13], [13,15], [12,14], [14,16], [11,23], [12,24], [23,24], [23,25], [24,26], [25,27], [26,28]];
+            bones.forEach(([a,b]) => {
+                ctx.beginPath();
+                ctx.moveTo(lm[a].x * canvas.width, lm[a].y * canvas.height);
+                ctx.lineTo(lm[b].x * canvas.width, lm[b].y * canvas.height);
+                ctx.stroke();
+            });
+            ctx.fillStyle = var(--accent);
+            lm.forEach(p => {
+                if (p.visibility > 0.8) {
+                    ctx.beginPath(); ctx.arc(p.x * canvas.width, p.y * canvas.height, 2, 0, 7); ctx.fill();
+                }
+            });
+        }
+    </script>
+</body>
+</html>
