@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Orchestra V19</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        .input_video { position: fixed; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.25; z-index: 0; filter: contrast(1.2) brightness(0.6); }
+        .output_canvas { position: fixed; width: 100%; height: 100%; z-index: 1; transform: scaleX(-1); }
+        
+        #ui-layer { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: center; align-items: center; background: radial-gradient(circle, rgba(0,0,0,0.6) 0%, rgba(0,0,0,0.95) 100%); color: white; text-align: center; }
+        .panel { background: #050505; padding: 40px; border-radius: 40px; border: 1px solid rgba(0,255,234,0.3); width: 85%; max-width: 400px; box-shadow: 0 0 50px rgba(0,0,0,1); }
+        .btn { padding: 18px; background: #00ffea; color: #000; border: none; border-radius: 50px; font-weight: bold; cursor: pointer; width: 100%; text-transform: uppercase; margin-top: 15px; letter-spacing: 1px; }
+        .btn-alt { background: #222; color: #fff; border: 1px solid #444; }
+        
+        #ver-tag { position: fixed; bottom: 5px; right: 8px; font-size: 0.6em; color: rgba(255,255,255,0.15); z-index: 20; }
+        #hud { position: fixed; top: 20px; left: 20px; color: #00ffea; font-family: monospace; z-index: 5; display: none; text-shadow: 0 0 10px rgba(0,255,234,0.5); }
+    </style>
+</head>
+<body>
+
+    <video class="input_video" playsinline muted></video>
+    <canvas class="output_canvas"></canvas>
+    <div id="ver-tag">v19.0</div>
+    <div id="hud">TEMPO: 100% | SALA: SECO</div>
+
+    <div id="ui-layer">
+        <div id="panel-content" class="panel">
+            <h1 style="letter-spacing: 8px; margin-bottom: 5px; font-weight: 200;">ORCHESTRA</h1>
+            <p style="font-size: 0.7em; opacity: 0.5; margin-bottom: 30px;">SIMULADOR DE DIRECCIÓN PROFESIONAL</p>
+            
+            <div id="actions">
+                <input type="file" id="audio-input" accept="audio/*" style="display:none">
+                <button class="btn" onclick="document.getElementById('audio-input').click()">CARGAR PARTITURA (MP3)</button>
+                <button class="btn btn-alt" onclick="startFreeMode()">MODO LIBRE (SOLO GESTOS)</button>
+            </div>
+            <p id="status-msg" style="font-size: 0.8em; margin-top: 25px; color: #00ffea;">LISTO PARA CALIBRAR</p>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const audioInput = document.getElementById('audio-input');
+
+        let player, reverb, filter, isPlaying = false, isFreeMode = false, flowState = "START";
+        let calProgress = 0, golpesDados = 0, lastY = 0, subiendo = false;
+        let lerpTempo = 1.0, trail = [], particles = [];
+
+        // Inicializar efectos profesionales
+        const woodTap = new Tone.MembraneSynth().toDestination();
+        
+        async function setupAudio(fileUrl = null) {
+            await Tone.start();
+            reverb = new Tone.Reverb({ decay: 4, wet: 0.1 }).toDestination();
+            filter = new Tone.Filter(20000, "lowpass").connect(reverb);
+            
+            if(fileUrl) {
+                player = new Tone.Player(fileUrl).connect(filter);
+                isFreeMode = false;
+            } else {
+                isFreeMode = true;
+                isPlaying = true; // En modo libre empezamos directo
+            }
+            
+            flowState = "SCANNING";
+            document.getElementById('actions').style.display = "none";
+            initPose();
+        }
+
+        audioInput.onchange = (e) => {
+            if (e.target.files[0]) setupAudio(URL.createObjectURL(e.target.files[0]));
+        };
+
+        function startFreeMode() { setupAudio(); }
+
+        function updateUI() {
+            if (flowState === "CONFIRMATION") {
+                document.getElementById('status-msg').innerText = "MAESTRO DETECTADO";
+                document.getElementById('actions').innerHTML = `
+                    <button class="btn" onclick="flowState='RITUAL'; updateUI();">POSICIÓN DE CONCIERTO</button>
+                `;
+                document.getElementById('actions').style.display = "block";
+            } else if (flowState === "RITUAL") {
+                document.getElementById('ui-layer').style.display = "none";
+                document.getElementById('hud').style.display = "block";
+            }
+        }
+
+        function initPose() {
+            const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+            pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.8 });
+            pose.onResults(onResults);
+            new Camera(videoElement, { onFrame: async () => { await pose.send({image: videoElement}); }, width: 640, height: 480 }).start();
+        }
+
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                const lm = results.poseLandmarks;
+                const handPos = { x: lm[20].x * canvasElement.width, y: lm[20].y * canvasElement.height };
+
+                // Mostrar esqueleto solo en calibración
+                if (flowState === "SCANNING" || flowState === "CONFIRMATION") {
+                    drawSkeleton(lm);
+                    calProgress += 0.8;
+                    document.getElementById('status-msg').innerText = `CALIBRANDO ACÚSTICA: ${Math.min(100, Math.round(calProgress))}%`;
+                    if (calProgress >= 100 && flowState === "SCANNING") { flowState = "CONFIRMATION"; updateUI(); }
+                }
+
+                if (flowState === "RITUAL" || isPlaying) {
+                    drawTrail(handPos);
+                    updateParticles(handPos);
+
+                    const speed = Math.abs(lm[16].y - lastY) * 100;
+
+                    if (!isPlaying && !isFreeMode && lm[16].y < 0.45) {
+                        if (lastY < lm[16].y - 0.1 && !subiendo) {
+                            woodTap.triggerAttackRelease("G2", "16n");
+                            golpesDados++; subiendo = true;
+                            if (golpesDados >= 3) { player.start(); isPlaying = true; }
+                        }
+                        if (lm[16].y < lastY - 0.05) subiendo = false;
+                    }
+
+                    if (isPlaying && !isFreeMode) {
+                        // 1. INERCIA DE TEMPO PROFESIONAL
+                        let targetT = 0.5 + (speed / 6);
+                        lerpTempo = (lerpTempo * 0.94) + (Math.min(Math.max(targetT, 0.6), 2.1) * 0.06);
+                        player.playbackRate = lerpTempo;
+
+                        // 2. REVERBERACIÓN POR ALTURA (0 arriba, 1 abajo)
+                        let roomWet = Math.max(0.05, (1 - lm[16].y) * 0.6);
+                        reverb.wet.rampTo(roomWet, 0.2);
+
+                        // 3. FILTRO DE CALIDAD
+                        let q = speed > 0.4 ? 1.0 : 0.2;
+                        filter.frequency.rampTo(200 + (q * 19800), 0.1);
+
+                        document.getElementById('hud').innerText = `TEMPO: ${Math.round(lerpTempo * 100)}% | SALA: ${roomWet > 0.3 ? 'GRAN TEATRO' : 'ESTUDIO'}`;
+                    }
+                    lastY = lm[16].y;
+                }
+            }
+        }
+
+        function drawTrail(pos) {
+            trail.push(pos); if (trail.length > 25) trail.shift();
+            canvasCtx.beginPath();
+            canvasCtx.lineWidth = 3;
+            canvasCtx.strokeStyle = "rgba(0, 255, 234, 0.4)";
+            for(let i = 0; i < trail.length - 1; i++) {
+                canvasCtx.moveTo(trail[i].x, trail[i].y);
+                canvasCtx.lineTo(trail[i+1].x, trail[i+1].y);
+            }
+            canvasCtx.stroke();
+        }
+
+        function updateParticles(handPos) {
+            if (Math.random() > 0.7) particles.push({ x: handPos.x, y: handPos.y, vx: (Math.random()-0.5)*5, vy: (Math.random()-0.5)*5, life: 1 });
+            particles.forEach((p, i) => {
+                p.x += p.vx; p.y += p.vy; p.life -= 0.02;
+                canvasCtx.fillStyle = `rgba(255, 255, 255, ${p.life})`;
+                canvasCtx.fillRect(p.x, p.y, 2, 2);
+                if (p.life <= 0) particles.splice(i, 1);
+            });
+        }
+
+        function drawSkeleton(lm) {
+            const p = (i) => ({ x: lm[i].x * canvasElement.width, y: lm[i].y * canvasElement.height });
+            canvasCtx.strokeStyle = "rgba(0, 255, 234, 0.3)";
+            canvasCtx.lineWidth = 1;
+            [[11,12], [12,14], [14,16], [11,13], [13,15]].forEach(pair => {
+                canvasCtx.beginPath(); canvasCtx.moveTo(p(pair[0]).x, p(pair[0]).y); 
+                canvasCtx.lineTo(p(pair[1]).x, p(pair[1]).y); canvasCtx.stroke();
+            });
+        }
+    </script>
+</body>
+</html>
