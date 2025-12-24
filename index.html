@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orchestra® v50 - Definitive Edition</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100;300;400;600&display=swap" rel="stylesheet">
+    
+    <style>
+        :root { --accent: #00ffea; --glass: rgba(10, 10, 10, 0.95); }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; color: white; font-family: 'Inter', sans-serif; overflow: hidden; }
+
+        /* Capas de Visión */
+        #input_video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); z-index: 1; display: none; }
+        #output_canvas { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 5; transform: scaleX(-1); pointer-events: none; }
+
+        /* Pantallas */
+        .screen { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; justify-content: center; align-items: center; backdrop-filter: blur(25px); transition: 0.5s cubic-bezier(0.16, 1, 0.3, 1); }
+        .hidden { opacity: 0; pointer-events: none; visibility: hidden; transform: translateY(20px); }
+        .glass-card { background: var(--glass); padding: 40px; border-radius: 35px; border: 1px solid rgba(255,255,255,0.1); text-align: center; width: 85%; max-width: 400px; box-shadow: 0 30px 60px rgba(0,0,0,0.8); }
+        
+        /* Botones y Controles */
+        .btn { background: white; color: black; border: none; padding: 18px; border-radius: 12px; font-weight: 600; letter-spacing: 2px; cursor: pointer; transition: 0.3s; width: 100%; margin: 10px 0; text-transform: uppercase; font-size: 0.7rem; }
+        .btn:hover:not(:disabled) { background: var(--accent); transform: scale(1.02); }
+        .btn:disabled { opacity: 0.1; }
+        .btn-outline { background: transparent; color: white; border: 1px solid rgba(255,255,255,0.2); }
+
+        /* Menú Config */
+        #side-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 300px; background: var(--glass); z-index: 500; transform: translateX(100%); transition: 0.4s; padding: 40px; border-left: 1px solid rgba(255,255,255,0.1); }
+        #side-panel.open { transform: translateX(0); }
+        #settings-trigger { position: fixed; top: 30px; right: 30px; z-index: 600; font-size: 1.6rem; cursor: pointer; opacity: 0.6; }
+
+        /* HUD */
+        #hit-count { font-size: 10rem; font-weight: 100; color: var(--accent); }
+        .progress-bar { width: 100%; height: 3px; background: rgba(255,255,255,0.1); margin: 30px 0; border-radius: 5px; position: relative; }
+        #fill { position: absolute; height: 100%; background: var(--accent); width: 0%; transition: 0.4s; box-shadow: 0 0 10px var(--accent); }
+    </style>
+</head>
+<body>
+
+    <video id="input_video" playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
+    <div id="settings-trigger" onclick="toggleMenu()">⚙️</div>
+
+    <div id="side-panel">
+        <h2 style="font-weight:200; letter-spacing:5px">SISTEMA</h2>
+        <div style="margin-top:30px">
+            <label id="lbl-lang" style="font-size:0.6rem; opacity:0.5">IDIOMA</label>
+            <select id="lang-select" onchange="applyLang()" style="width:100%; padding:10px; background:#111; color:white; border-radius:8px; border:1px solid #333">
+                <option value="es">Español</option>
+                <option value="en">English</option>
+            </select>
+        </div>
+        <div style="margin-top:20px">
+            <label id="lbl-sens" style="font-size:0.6rem; opacity:0.5">SENSIBILIDAD</label>
+            <input type="range" id="sens-slider" min="4" max="25" value="10" style="width:100%">
+        </div>
+        <div style="margin-top:20px">
+            <label id="lbl-op" style="font-size:0.6rem; opacity:0.5">OPACIDAD VIDEO</label>
+            <input type="range" id="op-slider" min="0" max="100" value="80" oninput="updateOp()" style="width:100%">
+        </div>
+        <button class="btn btn-outline" onclick="toggleMenu()" style="margin-top:40px">CERRAR</button>
+    </div>
+
+    <div id="scr-home" class="screen">
+        <div class="glass-card">
+            <h1 style="letter-spacing:10px; font-weight:100">ORCHESTRA</h1>
+            <input type="file" id="audio-input" accept="audio/*" style="display:none">
+            <button id="btn-up" class="btn btn-outline" onclick="document.getElementById('audio-input').click()">CARGAR OBRA</button>
+            <div id="audio-name" style="font-size:0.5rem; opacity:0.4; margin-bottom:15px">SIN ARCHIVO</div>
+            <button id="btn-m" class="btn" onclick="boot('maestro')" disabled>MODO MAESTRO</button>
+            <button id="btn-f" class="btn btn-outline" onclick="boot('libre')" disabled>MODO LIBRE</button>
+        </div>
+    </div>
+
+    <div id="scr-cal" class="screen hidden">
+        <div class="glass-card">
+            <p style="font-size:0.6rem; letter-spacing:5px; opacity:0.5">BIO-SYNC 5.0</p>
+            <h2 id="cal-step" style="font-weight:300">HOMBROS</h2>
+            <div class="progress-bar"><div id="fill"></div></div>
+            <div id="cal-ready" class="hidden">
+                <button class="btn" onclick="startHits()">CONTINUAR</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="scr-hits" class="screen hidden" style="background:transparent; backdrop-filter:none">
+        <p id="hit-msg" style="letter-spacing:10px">MARQUE 3 TIEMPOS</p>
+        <div id="hit-count">0</div>
+        <button id="btn-skip" class="btn btn-outline hidden" style="width:120px" onclick="play()">SALTAR</button>
+    </div>
+
+    <script>
+        const dict = {
+            es: { up: "CARGAR OBRA", m: "MODO MAESTRO", f: "MODO LIBRE", ready: "Calibración lista", hitMsg: "MARQUE 3 TIEMPOS", skip: "SALTAR", lang: "IDIOMA", sens: "SENSIBILIDAD", op: "OPACIDAD" },
+            en: { up: "LOAD SCORE", m: "MAESTRO MODE", f: "FREE MODE", ready: "Calibration Ready", hitMsg: "GIVE 3 BEATS", skip: "SKIP", lang: "LANGUAGE", sens: "SENSITIVITY", op: "OPACITY" }
+        };
+
+        let st = { mode: '', step: 0, hits: 0, lastY: 0, ready: false, live: false, t: 0, results: null };
+        const video = document.getElementById('input_video');
+        const canvas = document.getElementById('output_canvas');
+        const ctx = canvas.getContext('2d');
+        let player, pose, camera;
+
+        function applyLang() {
+            const l = dict[document.getElementById('lang-select').value];
+            document.getElementById('btn-up').innerText = l.up;
+            document.getElementById('btn-m').innerText = l.m;
+            document.getElementById('btn-f').innerText = l.f;
+            document.getElementById('hit-msg').innerText = l.hitMsg;
+            document.getElementById('btn-skip').innerText = l.skip;
+            document.getElementById('lbl-lang').innerText = l.lang;
+            document.getElementById('lbl-sens').innerText = l.sens;
+            document.getElementById('lbl-op').innerText = l.op;
+        }
+
+        document.getElementById('audio-input').onchange = (e) => {
+            if(e.target.files[0]) {
+                document.getElementById('audio-name').innerText = e.target.files[0].name.toUpperCase();
+                document.getElementById('btn-m').disabled = false;
+                document.getElementById('btn-f').disabled = false;
+            }
+        };
+
+        async function boot(m) {
+            st.mode = m; await Tone.start();
+            player = new Tone.Player(URL.createObjectURL(document.getElementById('audio-input').files[0])).toDestination();
+            document.getElementById('scr-home').classList.add('hidden');
+            document.getElementById('scr-cal').classList.remove('hidden');
+            video.style.display = 'block';
+
+            pose = new Pose({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`});
+            pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+            pose.onResults(res => { st.results = res; });
+
+            camera = new Camera(video, {
+                onFrame: async () => { await pose.send({image: video}); },
+                width: 640, height: 480
+            });
+            camera.start();
+            requestAnimationFrame(loop);
+        }
+
+        function loop() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (st.results && st.results.poseLandmarks) {
+                const lm = st.results.poseLandmarks;
+                drawSkel(lm);
+                
+                if (!st.ready) doCal(lm);
+                else if (st.live) doMusic(lm);
+                else doHits(lm);
+            }
+            requestAnimationFrame(loop);
+        }
+
+        function drawSkel(lm) {
+            ctx.strokeStyle = "rgba(0, 255, 234, 0.5)"; ctx.lineWidth = 3;
+            const bones = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[25,27],[26,28]];
+            bones.forEach(([a, b]) => {
+                if(lm[a].visibility > 0.5 && lm[b].visibility > 0.5) {
+                    ctx.beginPath();
+                    ctx.moveTo(lm[a].x * canvas.width, lm[a].y * canvas.height);
+                    ctx.lineTo(lm[b].x * canvas.width, lm[b].y * canvas.height);
+                    ctx.stroke();
+                }
+            });
+            ctx.fillStyle = "white";
+            [15, 16, 11, 12, 23, 24].forEach(i => {
+                ctx.beginPath(); ctx.arc(lm[i].x * canvas.width, lm[i].y * canvas.height, 5, 0, 7); ctx.fill();
+            });
+        }
+
+        function doCal(lm) {
+            const z = [[11,12], [13,14,15,16], [23,24], [27,28]];
+            const n = ["HOMBROS", "BRAZOS", "TORSO", "PIES"];
+            if(z[st.step].every(i => lm[i].visibility > 0.8)) {
+                st.step++;
+                document.getElementById('fill').style.width = (st.step/4)*100 + "%";
+                if(st.step < 4) document.getElementById('cal-step').innerText = n[st.step];
+                else document.getElementById('cal-ready').classList.remove('hidden');
+            }
+        }
+
+        function startHits() {
+            st.ready = true; st.t = Date.now();
+            document.getElementById('scr-cal').classList.add('hidden');
+            document.getElementById('scr-hits').classList.remove('hidden');
+        }
+
+        function doHits(lm) {
+            let y = lm[16].y;
+            let v = Math.abs(y - st.lastY) * 100;
+            if(Date.now() - st.t > 10000) document.getElementById('btn-skip').classList.remove('hidden');
+            if(v > document.getElementById('sens-slider').value) {
+                st.hits++; document.getElementById('hit-count').innerText = st.hits;
+                if(st.hits >= 3) play();
+            }
+            st.lastY = y;
+        }
+
+        function play() {
+            st.live = true;
+            document.getElementById('scr-hits').classList.add('hidden');
+            player.start();
+        }
+
+        function doMusic(lm) {
+            let y = lm[16].y;
+            let v = Math.abs(y - st.lastY) * 100;
+            player.volume.value = Tone.gainToDb(1.4 - y);
+            if(v > 0.4) {
+                player.playbackRate = st.mode === 'maestro' ? (0.6 + v/10) : 1.0;
+                player.mute = false;
+            } else { player.mute = true; }
+            st.lastY = y;
+        }
+
+        function toggleMenu() { document.getElementById('side-panel').classList.toggle('open'); }
+        function updateOp() { video.style.opacity = document.getElementById('op-slider').value / 100; }
+        applyLang();
+    </script>
+</body>
+</html>
