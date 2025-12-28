@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAESTRO - Simulador de Orquesta</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: black; color: white;
+            font-family: 'Times New Roman', serif; overflow: hidden;
+        }
+
+        .screen {
+            display: none; position: absolute; width: 100%; height: 100%;
+            flex-direction: column; justify-content: center; align-items: center;
+        }
+
+        .active { display: flex; }
+
+        /* Interfaz de Usuario */
+        h1 { font-size: 80px; letter-spacing: 15px; font-weight: 200; }
+        
+        button {
+            background: white; color: black; border: none;
+            padding: 15px 50px; font-size: 20px; cursor: pointer;
+            border-radius: 5px; margin-top: 20px; transition: 0.3s;
+        }
+
+        button:hover { transform: scale(1.1); background: #ddd; }
+
+        /* Cámara y Video */
+        video, canvas {
+            position: absolute; width: 100vw; height: 100vh;
+            object-fit: cover; transform: scaleX(-1);
+        }
+
+        #ui-overlay {
+            position: relative; z-index: 10; text-align: center;
+            background: rgba(0,0,0,0.6); padding: 30px; border-radius: 20px;
+        }
+
+        /* Canciones */
+        .song-btn {
+            background: #111; border: 1px solid white; color: white;
+            width: 350px; margin: 10px; padding: 25px; cursor: pointer;
+        }
+        .song-btn:hover { background: white; color: black; }
+
+        /* Flechas del Juego */
+        .arrow {
+            position: absolute; font-size: 80px; color: yellow;
+            z-index: 100; pointer-events: none;
+            animation: moveArrow 2s linear forwards;
+        }
+
+        @keyframes moveArrow {
+            from { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+            to { transform: translate(var(--tx), var(--ty)) scale(1.2); opacity: 1; }
+        }
+
+        #countdown { font-size: 150px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="scr-home" class="screen active">
+        <h1>MAESTRO</h1>
+        <button onclick="initApp()">JUGAR</button>
+    </div>
+
+    <div id="scr-scan" class="screen">
+        <video id="scan-v" style="opacity: 0.8;"></video>
+        <canvas id="scan-c"></canvas>
+        <div id="ui-overlay">
+            <h2 id="status-txt">Iniciando cámara...</h2>
+            <div id="confirm-box" style="display:none;">
+                <h3>¿Esqueleto correcto?</h3>
+                <button onclick="showSongs()">SÍ</button>
+                <button onclick="location.reload()" style="background:#555; color:white;">NO</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="scr-songs" class="screen">
+        <h1>SELECCIÓN</h1>
+        <button class="song-btn" onclick="startGame('Toreadors')">Les Toréadors (Bizet)</button>
+        <button class="song-btn" onclick="startGame('9na')">Sinfonía No. 9 (Beethoven)</button>
+        <button class="song-btn" onclick="startGame('Primavera')">La Primavera (Vivaldi)</button>
+    </div>
+
+    <div id="scr-game" class="screen">
+        <video id="game-v" style="opacity: 0.8;"></video>
+        <canvas id="game-c"></canvas>
+        <div id="game-hud" style="z-index: 200;">
+            <h1 id="prep-txt">PREPÁRATE</h1>
+            <div id="countdown"></div>
+        </div>
+        <div id="arrow-container"></div>
+    </div>
+
+    <script>
+        // Variables Globales
+        let stream;
+        const scanV = document.getElementById('scan-v');
+        const gameV = document.getElementById('game-v');
+        const scanC = document.getElementById('scan-c');
+        const gameC = document.getElementById('game-c');
+        const scanCtx = scanC.getContext('2d');
+        const gameCtx = gameC.getContext('2d');
+
+        // Configuración de MediaPipe
+        const pose = new Pose({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`});
+        const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+
+        function nav(id) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+        }
+
+        async function initApp() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({video: true});
+                scanV.srcObject = stream;
+                gameV.srcObject = stream;
+                scanV.play();
+                nav('scr-scan');
+                runScan();
+            } catch (e) { alert("Cámara no disponible"); }
+        }
+
+        // Lógica de Escaneo Progresivo
+        let scanLevel = 0;
+        function runScan() {
+            pose.setOptions({modelComplexity: 1, minDetectionConfidence: 0.5});
+            pose.onResults(results => {
+                scanC.width = scanV.videoWidth;
+                scanC.height = scanV.videoHeight;
+                scanCtx.clearRect(0,0,scanC.width, scanC.height);
+                if (results.poseLandmarks) {
+                    // Dibujado progresivo simulado
+                    if(scanLevel > 20) drawConnectors(scanCtx, results.poseLandmarks, [[11,12]], {color: 'white'}); // Hombros
+                    if(scanLevel > 50) drawConnectors(scanCtx, results.poseLandmarks, [[11,13], [12,14]], {color: 'white'}); // Brazos
+                    if(scanLevel > 80) drawLandmarks(scanCtx, [results.poseLandmarks[0]], {color: 'white'}); // Cabeza
+                }
+            });
+
+            let interval = setInterval(() => {
+                scanLevel++;
+                document.getElementById('status-txt').innerText = `Analizando... ${scanLevel}%`;
+                pose.send({image: scanV});
+                if(scanLevel >= 100) {
+                    clearInterval(interval);
+                    document.getElementById('status-txt').style.display = 'none';
+                    document.getElementById('confirm-box').style.display = 'block';
+                }
+            }, 50);
+        }
+
+        function showSongs() { nav('scr-songs'); }
+
+        // Lógica de Juego y Flechas
+        function startGame(song) {
+            nav('scr-game');
+            let count = 3;
+            const cd = document.getElementById('countdown');
+            const pt = document.getElementById('prep-txt');
+            
+            const timer = setInterval(() => {
+                pt.style.display = 'none';
+                cd.innerText = count;
+                if(count <= 0) {
+                    clearInterval(timer);
+                    cd.style.display = 'none';
+                    launchGameLoop();
+                }
+                count--;
+            }, 1000);
+        }
+
+        function launchGameLoop() {
+            hands.setOptions({maxNumHands: 2, minDetectionConfidence: 0.7});
+            hands.onResults(hResults => {
+                gameC.width = gameV.videoWidth; gameC.height = gameV.videoHeight;
+                gameCtx.clearRect(0,0,gameC.width, gameC.height);
+                if(hResults.multiHandLandmarks) {
+                    hResults.multiHandLandmarks.forEach(lm => {
+                        drawConnectors(gameCtx, lm, HAND_CONNECTIONS, {color: 'lime', lineWidth: 5});
+                    });
+                }
+            });
+
+            setInterval(() => hands.send({image: gameV}), 50);
+            
+            // Generador de flechas al ritmo (Simulación Les Toréadors)
+            const directions = ['↑', '↓', '←', '→', '↗', '↘'];
+            setInterval(() => {
+                createArrow(directions[Math.floor(Math.random()*directions.length)]);
+            }, 1200); 
+        }
+
+        function createArrow(dir) {
+            const container = document.getElementById('arrow-container');
+            const arrow = document.createElement('div');
+            arrow.className = 'arrow';
+            arrow.innerText = dir;
+            
+            // Posición aleatoria de destino
+            const tx = (Math.random() * 400 - 200) + 'px';
+            const ty = (Math.random() * 400 - 200) + 'px';
+            arrow.style.setProperty('--tx', tx);
+            arrow.style.setProperty('--ty', ty);
+            arrow.style.left = '50%'; arrow.style.top = '50%';
+            
+            container.appendChild(arrow);
+            setTimeout(() => arrow.remove(), 2000);
+        }
+    </script>
+</body>
+</html>
