@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Camix - AR Experience</title>
+    <style>
+        /* =========================================
+           ESTILOS (CSS) - DISEÑO CAMIX MODERNO
+           ========================================= */
+        :root {
+            --primary: #FFFC00; /* Amarillo Snapchat */
+            --accent: #000;
+            --glass: rgba(255, 255, 255, 0.25);
+            --glass-border: rgba(255, 255, 255, 0.5);
+            --font: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        * { box-sizing: border-box; touch-action: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+
+        body {
+            margin: 0; padding: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: var(--font);
+            width: 100vw; height: 100vh;
+        }
+
+        /* Video Oculto (Fuente de datos) */
+        #source-video {
+            display: none;
+            position: absolute; top: 0; left: 0;
+        }
+
+        /* Canvas Principal (Renderizado AR) */
+        #ar-canvas {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 1;
+        }
+
+        /* UI Overlay */
+        #ui-layer {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 10;
+            pointer-events: none; /* Dejar pasar clicks al canvas si es necesario */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        /* Pantalla de Inicio / Permisos */
+        #start-screen {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: #000;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            text-align: center;
+        }
+        .btn-start {
+            margin-top: 20px;
+            padding: 15px 40px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            background: var(--primary);
+            color: black;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            box-shadow: 0 0 20px rgba(255, 252, 0, 0.4);
+            animation: pulse 2s infinite;
+        }
+
+        /* HUD Superior */
+        .hud-top {
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            pointer-events: auto;
+        }
+        .logo {
+            font-weight: 900; font-size: 1.5rem; color: white;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            background: rgba(0,0,0,0.5);
+            padding: 5px 15px; border-radius: 20px;
+        }
+        .status-pill {
+            background: rgba(255,0,0,0.6);
+            color: white;
+            padding: 5px 12px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        .status-pill.active { background: rgba(0,255,0,0.6); }
+
+        /* Controles Inferiores (Rueda + Captura) */
+        .hud-bottom {
+            padding-bottom: 30px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            pointer-events: auto;
+            background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+        }
+
+        /* Rueda de Selección (Carrusel) */
+        .wheel-container {
+            display: flex;
+            gap: 15px;
+            overflow-x: auto;
+            padding: 10px 20px;
+            width: 100%;
+            max-width: 400px;
+            scroll-snap-type: x mandatory;
+            scrollbar-width: none; /* Firefox */
+        }
+        .wheel-container::-webkit-scrollbar { display: none; } /* Chrome/Safari */
+
+        .wheel-item {
+            flex: 0 0 70px;
+            height: 70px;
+            border-radius: 50%;
+            background: var(--glass);
+            border: 2px solid var(--glass-border);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            scroll-snap-align: center;
+        }
+        .wheel-item.selected {
+            border-color: var(--primary);
+            background: rgba(255, 252, 0, 0.2);
+            transform: scale(1.2) translateY(-10px);
+            box-shadow: 0 0 15px var(--primary);
+        }
+
+        /* Botón de Captura */
+        .capture-btn {
+            width: 80px; height: 80px;
+            border-radius: 50%;
+            border: 5px solid white;
+            background: transparent;
+            margin-top: 20px;
+            position: relative;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .capture-btn::after {
+            content: ''; position: absolute;
+            top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 60px; height: 60px;
+            background: white; border-radius: 50%;
+            transition: all 0.2s;
+        }
+        .capture-btn:active { transform: scale(0.95); }
+        .capture-btn:active::after { background: var(--primary); width: 50px; height: 50px;}
+
+        /* Animaciones */
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+        
+        /* Mensaje Flash al tomar foto */
+        #flash {
+            position: absolute; top:0; left:0; width:100%; height:100%;
+            background: white; opacity: 0; pointer-events: none; z-index: 200;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="start-screen">
+        <h1 style="font-size: 3rem; margin-bottom: 0;">CAMIX</h1>
+        <p style="color: #ccc; margin-top: 5px;">Realidad Aumentada Web</p>
+        <p style="max-width: 300px; font-size: 0.9rem; margin: 20px auto;">
+            Mueve tu teléfono para interactuar.<br>Apunta a una mesa o superficie con textura.
+        </p>
+        <button class="btn-start" onclick="App.init()">INICIAR EXPERIENCIA</button>
+        <p style="font-size: 0.7rem; color: #555; margin-top: 30px;">Requiere cámara y sensores de movimiento</p>
+    </div>
+
+    <video id="source-video" autoplay playsinline muted></video>
+
+    <div id="ui-layer">
+        <div class="hud-top">
+            <div class="logo">CAMIX</div>
+            <div id="status-pill" class="status-pill">BUSCANDO...</div>
+        </div>
+        
+        <div class="hud-bottom">
+            <div class="wheel-container" id="wheel">
+                <div class="wheel-item selected" onclick="App.selectItem(0, 'cube')">🧊</div>
+                <div class="wheel-item" onclick="App.selectItem(1, 'glasses')">🕶️</div>
+                <div class="wheel-item" onclick="App.selectItem(2, 'hat')">🎩</div>
+                <div class="wheel-item" onclick="App.selectItem(3, 'shoe')">👟</div>
+                <div class="wheel-item" onclick="App.selectItem(4, 'ghost')">👻</div>
+            </div>
+            <div class="capture-btn" onclick="App.takeSnapshot()"></div>
+        </div>
+    </div>
+
+    <div id="flash"></div>
+
+    <canvas id="ar-canvas"></canvas>
+
+    <script>
+        /**
+         * CAMIX ENGINE v1.0
+         * Single file WebAR implementation logic.
+         */
+
+        const App = {
+            // Configuración
+            config: {
+                width: 0,
+                height: 0,
+                useDemoMode: false, // Se activa si falla la cámara
+                smoothing: 0.15,    // Suavizado de movimiento (Lerp)
+            },
+
+            // Estado del sistema
+            state: {
+                running: false,
+                videoReady: false,
+                surfaceDetected: false,
+                activeItemIndex: 0,
+                activeItemType: 'cube',
+                // Datos de sensores
+                rotation: { alpha: 0, beta: 0, gamma: 0 },
+                // Datos de Visión por Computadora (Heurística)
+                lastFrameData: null,
+                anchor: { x: 0, y: 0, scale: 1 }, // Posición virtual
+                worldOffset: { x: 0, y: 0 },      // Movimiento calculado por CV
+            },
+
+            // Elementos DOM
+            els: {},
+
+            // 1. INICIALIZACIÓN
+            init: async function() {
+                // Audio Context para sonidos
+                this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                this.playSound('start');
+
+                document.getElementById('start-screen').style.display = 'none';
+                
+                this.els.video = document.getElementById('source-video');
+                this.els.canvas = document.getElementById('ar-canvas');
+                this.els.ctx = this.els.canvas.getContext('2d', { willReadFrequently: true });
+                this.els.status = document.getElementById('status-pill');
+                this.els.wheelItems = document.querySelectorAll('.wheel-item');
+                this.els.flash = document.getElementById('flash');
+
+                this.resize();
+                window.addEventListener('resize', () => this.resize());
+
+                // Solicitar Sensores (iOS 13+)
+                if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    try { await DeviceOrientationEvent.requestPermission(); } catch (e) { console.warn(e); }
+                }
+                
+                window.addEventListener('deviceorientation', (e) => this.handleOrientation(e));
+
+                await this.startCamera();
+                this.state.running = true;
+                this.loop();
+            },
+
+            // 2. MANEJO DE CÁMARA
+            startCamera: async function() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: false,
+                        video: { facingMode: { exact: "environment" } } // Intenta trasera
+                    }).catch(() => {
+                        // Fallback: cualquier cámara
+                        return navigator.mediaDevices.getUserMedia({ video: true });
+                    });
+                    
+                    this.els.video.srcObject = stream;
+                    this.els.video.onloadedmetadata = () => {
+                        this.state.videoReady = true;
+                        this.els.video.play();
+                    };
+                } catch (err) {
+                    console.error("Cámara falló, activando Modo Demo", err);
+                    this.state.videoReady = false;
+                    this.config.useDemoMode = true;
+                    this.els.status.innerText = "MODO DEMO";
+                    this.els.status.style.background = "orange";
+                }
+            },
+
+            // 3. SENSORES Y CONTROL
+            handleOrientation: function(e) {
+                // Guardamos orientación para rotar objetos
+                // alpha: 0-360 (compás), beta: tilt front/back, gamma: tilt left/right
+                this.state.rotation.alpha = e.alpha || 0;
+                this.state.rotation.beta = e.beta || 0;
+                this.state.rotation.gamma = e.gamma || 0;
+            },
+
+            resize: function() {
+                this.config.width = window.innerWidth;
+                this.config.height = window.innerHeight;
+                this.els.canvas.width = this.config.width;
+                this.els.canvas.height = this.config.height;
+                // Posición inicial del objeto en el centro
+                this.state.anchor.x = this.config.width / 2;
+                this.state.anchor.y = this.config.height / 2 + 100;
+            },
+
+            // 4. BUCLE PRINCIPAL (RENDER LOOP)
+            loop: function() {
+                if (!this.state.running) return;
+
+                const ctx = this.els.ctx;
+                const w = this.config.width;
+                const h = this.config.height;
+
+                // A. DIBUJAR FONDO (Cámara o Demo)
+                if (this.state.videoReady) {
+                    // Mantener ratio de aspecto (cover)
+                    const vW = this.els.video.videoWidth;
+                    const vH = this.els.video.videoHeight;
+                    const scale = Math.max(w / vW, h / vH);
+                    const x = (w - vW * scale) / 2;
+                    const y = (h - vH * scale) / 2;
+                    ctx.drawImage(this.els.video, x, y, vW * scale, vH * scale);
+                    
+                    // PROCESAMIENTO CV (Visión por Computadora Simplificada)
+                    this.processCV(ctx, w, h);
+
+                } else if (this.config.useDemoMode) {
+                    // Fondo generado para pruebas
+                    ctx.fillStyle = '#222';
+                    ctx.fillRect(0,0,w,h);
+                    this.drawGrid(ctx, w, h, Date.now() / 50); // Grid animado
+                }
+
+                // B. ACTUALIZAR FÍSICA / TRANSFORMACIÓN
+                this.updatePhysics();
+
+                // C. DIBUJAR INDICADORES DE SUPERFICIE
+                if (this.state.surfaceDetected || this.config.useDemoMode) {
+                    this.drawReticle(ctx, this.state.anchor.x, this.state.anchor.y);
+                    this.els.status.classList.add('active');
+                    this.els.status.innerText = "SUPERFICIE DETECTADA";
+                } else {
+                    this.els.status.classList.remove('active');
+                    this.els.status.innerText = "BUSCANDO MESA...";
+                }
+
+                // D. DIBUJAR OBJETO AR
+                // Solo dibujamos si detectamos algo o estamos en demo
+                if (this.state.surfaceDetected || this.config.useDemoMode) {
+                    this.drawObject(ctx);
+                }
+
+                requestAnimationFrame(() => this.loop());
+            },
+
+            // 5. VISIÓN POR COMPUTADORA (HEURÍSTICA SIN LIBRERÍAS)
+            processCV: function(ctx, w, h) {
+                // Optimizacion: Analizamos solo el centro cada 3 frames para rendimiento
+                if (Math.floor(Date.now() / 100) % 2 !== 0) return;
+
+                const size = 60; // Área de muestra
+                const x = (w / 2) - (size / 2);
+                const y = (h / 2) - (size / 2);
+                
+                try {
+                    const frame = ctx.getImageData(x, y, size, size);
+                    const data = frame.data;
+                    let brightness = 0;
+                    let contrast = 0;
+                    
+                    // Calcular brillo promedio
+                    for (let i = 0; i < data.length; i += 4) {
+                        brightness += (data[i] + data[i+1] + data[i+2]) / 3;
+                    }
+                    brightness /= (data.length / 4);
+
+                    // Lógica simple: Si hay suficiente luz y contraste (no está negro ni blanco puro)
+                    // asumimos que es una superficie válida para este ejemplo simple.
+                    // En una app real, usaríamos "Optical Flow" calculando diferencias de píxeles.
+                    
+                    if (brightness > 30 && brightness < 230) {
+                        this.state.surfaceDetected = true;
+                        
+                        // FAKE TRACKING: Usamos la orientación del dispositivo para mover el objeto
+                        // inversamente al movimiento de la cámara, simulando que está anclado.
+                    } else {
+                        this.state.surfaceDetected = false;
+                    }
+                } catch (e) {
+                    // Evitar crash por tainted canvas si ocurre
+                }
+            },
+
+            updatePhysics: function() {
+                // ANCLAJE HEURÍSTICO
+                // Movemos el objeto basándonos en el giroscopio para dar ilusión de posición
+                // Si el usuario gira el movil a la derecha (gamma positivo), el objeto debe ir a la izquierda.
+                
+                const sensitivity = 5; 
+                const targetX = (this.config.width / 2) - (this.state.rotation.gamma * sensitivity);
+                const targetY = (this.config.height / 2) + 100 - ((this.state.rotation.beta - 45) * sensitivity * 2);
+
+                // Lerp para suavizar (Linear Interpolation)
+                this.state.anchor.x += (targetX - this.state.anchor.x) * this.config.smoothing;
+                this.state.anchor.y += (targetY - this.state.anchor.y) * this.config.smoothing;
+                
+                // Escala basada en inclinación (simula alejarse/acercarse)
+                // Si inclinas el movil hacia abajo (mirar mesa), se ve más cerca.
+                const scaleBase = 1 + (this.state.rotation.beta / 100);
+                this.state.anchor.scale = Math.max(0.5, Math.min(2.0, scaleBase));
+            },
+
+            // 6. RENDERIZADO DE OBJETOS
+            drawReticle: function(ctx, x, y) {
+                // Dibuja una rejilla tipo "suelo" debajo del objeto
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.scale(1, 0.4); // Perspectiva isométrica falsa
+                
+                ctx.beginPath();
+                ctx.arc(0, 0, 80 * this.state.anchor.scale, 0, Math.PI * 2);
+                ctx.strokeStyle = "rgba(255, 252, 0, 0.5)";
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.stroke();
+                
+                // Sombra falsa (Idea Pro #2)
+                ctx.fillStyle = "rgba(0,0,0,0.4)";
+                ctx.fill();
+                
+                ctx.restore();
+            },
+
+            drawObject: function(ctx) {
+                const type = this.state.activeItemType;
+                const x = this.state.anchor.x;
+                const y = this.state.anchor.y;
+                const s = this.state.anchor.scale * 100; // Tamaño base
+                
+                ctx.save();
+                ctx.translate(x, y);
+                // Rotación basada en el objeto (puedes girar el objeto girando el cuerpo)
+                // Para simplificar, le damos una pequeña oscilación "viva"
+                const osc = Math.sin(Date.now() / 500) * 0.1;
+                ctx.rotate(osc); 
+
+                // --- SWITCH DE OBJETOS ---
+                
+                if (type === 'cube') {
+                    // Cubo 3D falso (dibujo isométrico 2D)
+                    ctx.fillStyle = "#00d2ff"; // Cara frontal
+                    ctx.fillRect(-s/2, -s, s, s);
+                    
+                    ctx.fillStyle = "#0078ff"; // Cara superior
+                    ctx.beginPath();
+                    ctx.moveTo(-s/2, -s);
+                    ctx.lineTo(0, -s - (s/3));
+                    ctx.lineTo(s/2, -s);
+                    ctx.lineTo(0, -s + (s/3)); // perspectiva incorrecta intencional para estilo
+                    ctx.fill();
+
+                    ctx.strokeStyle = "white";
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(-s/2, -s, s, s);
+
+                } else if (type === 'glasses') {
+                    // Lentes Pixelados
+                    ctx.fillStyle = "black";
+                    ctx.fillRect(-s, -s/2, s*2, s/2); // Marcos
+                    ctx.fillStyle = "#FFFC00"; // Reflejo
+                    ctx.fillRect(-s+10, -s/2+10, 20, 10);
+                    ctx.fillRect(10, -s/2+10, 20, 10);
+
+                } else if (type === 'hat') {
+                    // Sombrero
+                    ctx.fillStyle = "#333";
+                    ctx.beginPath();
+                    ctx.ellipse(0, 0, s, s/3, 0, 0, Math.PI*2); 
