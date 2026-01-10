@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>WebAR Heurístico - Demo Extrem</title>
+    <style>
+        /* =========================================
+           CSS: ESTILOS Y UI
+           ========================================= */
+        :root {
+            --primary: #00ffcc;
+            --bg-overlay: rgba(0, 0, 0, 0.6);
+            --font-main: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        * { box-sizing: border-box; touch-action: none; user-select: none; }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: var(--font-main);
+            color: white;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Video de fondo */
+        #camera-feed {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            z-index: 0;
+        }
+
+        /* Canvas de procesamiento (Invisible en UI, usado para lógica) */
+        #processing-canvas {
+            display: none; 
+        }
+
+        /* Contenedor de la escena "3D" CSS */
+        #scene-container {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            perspective: 1000px;
+            z-index: 10;
+            pointer-events: none; /* Dejar pasar clicks al fallback si necesario */
+            overflow: hidden;
+        }
+
+        /* HUD - Heads Up Display */
+        #hud {
+            position: absolute;
+            top: 20px; left: 20px;
+            z-index: 20;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+            pointer-events: none;
+        }
+        .status-badge {
+            background: rgba(0,0,0,0.5);
+            padding: 5px 10px;
+            border-radius: 15px;
+            border: 1px solid rgba(255,255,255,0.3);
+            font-size: 14px;
+            margin-bottom: 5px;
+            display: inline-block;
+        }
+        .debug-text {
+            font-size: 10px;
+            font-family: monospace;
+            color: #ccc;
+            margin-top: 5px;
+        }
+
+        /* Crosshair / Retícula */
+        #crosshair-container {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 15;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+        .crosshair-lines {
+            width: 40px; height: 40px;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+        .crosshair-lines::after, .crosshair-lines::before {
+            content: '';
+            position: absolute;
+            background: white;
+        }
+        .crosshair-lines::after { top: 18px; left: 5px; width: 30px; height: 2px; } /* Horizontal */
+        .crosshair-lines::before { top: 5px; left: 18px; width: 2px; height: 30px; } /* Vertical */
+
+        .crosshair-stable {
+            border-color: var(--primary);
+            box-shadow: 0 0 10px var(--primary);
+            transform: scale(1.1);
+        }
+
+        /* Rueda de selección */
+        #selection-wheel {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            background: rgba(20, 20, 20, 0.8);
+            padding: 10px 20px;
+            border-radius: 30px;
+            backdrop-filter: blur(5px);
+            z-index: 30;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .obj-btn {
+            width: 50px; height: 50px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            background: rgba(255,255,255,0.1);
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        .obj-btn.active {
+            background: var(--primary);
+            color: black;
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0, 255, 204, 0.4);
+        }
+
+        /* Botón de Inicio / Permisos */
+        #start-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #111;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 20px;
+        }
+        .start-btn {
+            background: var(--primary);
+            color: black;
+            border: none;
+            padding: 15px 30px;
+            font-size: 18px;
+            font-weight: bold;
+            border-radius: 8px;
+            margin-top: 20px;
+            cursor: pointer;
+        }
+
+        /* =========================================
+           CSS: OBJETOS "3D" (DOM-based)
+           ========================================= */
+        .ar-object-wrapper {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 0; height: 0;
+            transform-style: preserve-3d;
+            /* El transform se setea via JS */
+        }
+
+        /* Sombra base genérica */
+        .ar-shadow {
+            position: absolute;
+            top: 0; left: -25px;
+            width: 50px; height: 50px;
+            background: radial-gradient(rgba(0,0,0,0.6), transparent 70%);
+            transform: rotateX(90deg) translateZ(-1px);
+        }
+
+        /* Taza (Cilindro CSS simple) */
+        .obj-cup { width: 40px; height: 50px; position: relative; transform-style: preserve-3d; transform: translateY(-25px); }
+        .obj-cup .body {
+            position: absolute; width: 100%; height: 100%;
+            background: linear-gradient(to right, #ddd, #fff, #bbb);
+            border-radius: 0 0 15px 15px;
+        }
+        .obj-cup .handle {
+            position: absolute; right: -10px; top: 10px; width: 15px; height: 25px;
+            border: 4px solid #fff; border-radius: 0 10px 10px 0;
+        }
+        .obj-cup .steam { /* Confetti/Vapor logic in JS */ }
+
+        /* Laptop */
+        .obj-laptop { width: 80px; height: 50px; position: relative; transform-style: preserve-3d; transform: translateY(-25px); }
+        .obj-laptop .base {
+            position: absolute; bottom: 0; width: 80px; height: 50px;
+            background: #333; transform: rotateX(90deg); transform-origin: bottom;
+        }
+        .obj-laptop .screen {
+            position: absolute; bottom: 0; width: 80px; height: 50px;
+            background: #111; border: 2px solid #444;
+            transform-origin: bottom; transform: rotateX(-10deg);
+            display: flex; align-items: center; justify-content: center;
+        }
+        .obj-laptop .screen-content { width: 90%; height: 80%; background: #000; transition: background 0.3s;}
+        .screen-on { background: linear-gradient(45deg, blue, purple) !important; box-shadow: 0 0 10px blue; }
+
+        /* Planta */
+        .obj-plant { width: 40px; height: 60px; position: relative; transform-style: preserve-3d; transform: translateY(-60px); }
+        .obj-plant .pot {
+            position: absolute; bottom: 0; left: 5px; width: 30px; height: 25px;
+            background: brown; border-radius: 2px 2px 10px 10px;
+        }
+        .obj-plant .leaf {
+            position: absolute; bottom: 25px; left: 15px; width: 10px; height: 30px;
+            background: green; border-radius: 10px 10px 0 0; transform-origin: bottom center;
+        }
+        .leaf-1 { transform: rotate(-15deg); }
+        .leaf-2 { transform: rotate(15deg); }
+        .leaf-3 { transform: rotate(0deg) scale(1.2); }
+
+        /* Botella */
+        .obj-bottle { width: 20px; height: 70px; position: relative; transform-style: preserve-3d; transform: translateY(-70px); }
+        .obj-bottle .body {
+            position: absolute; bottom: 0; width: 100%; height: 50px;
+            background: rgba(0, 100, 255, 0.6); border: 1px solid rgba(255,255,255,0.3);
+        }
+        .obj-bottle .neck {
+            position: absolute; bottom: 50px; left: 5px; width: 10px; height: 20px;
+            background: rgba(0, 100, 255, 0.6);
+        }
+        .obj-bottle .cap {
+            position: absolute; bottom: 70px; left: 5px; width: 10px; height: 5px;
+            background: red; transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        .cap-pop { transform: translateY(-30px) rotate(180deg); }
+
+        /* Fallback Controls */
+        #fallback-controls {
+            position: absolute; right: 10px; top: 10px;
+            z-index: 50; display: none;
+        }
+        .icon-btn {
+            background: rgba(0,0,0,0.5); color: white; border: 1px solid #555;
+            border-radius: 4px; padding: 5px; font-size: 12px; cursor: pointer;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div id="start-overlay">
+        <h1>WebAR Heurístico</h1>
+        <p>Interacción sin toque usando visión artificial básica y sensores.</p>
+        <p style="font-size:0.9rem; color:#aaa; margin-top:10px;">Requiere cámara y sensores de movimiento.</p>
+        <button class="start-btn" onclick="app.init()">COMENZAR EXPERIENCIA</button>
+        <div style="margin-top:20px; font-size: 0.8rem; color: #777;">
+            Nota: Funciona mejor en móviles con buena luz.<br>iOS Safari requiere permiso explícito.
+        </div>
+    </div>
+
+    <video id="camera-feed" autoplay playsinline muted></video>
+    
+    <canvas id="processing-canvas"></canvas>
+
+    <div id="scene-container"></div>
+
+    <div id="hud">
+        <div id="status-text" class="status-badge">Esperando cámara...</div>
+        <div id="instruction-text" class="status-badge" style="background:transparent; border:none; display:block;">Apunta a una superficie con textura</div>
+        <div id="debug-info" class="debug-text"></div>
+    </div>
+
+    <div id="fallback-controls">
+        <button class="icon-btn" onclick="app.enableFallbackTouchMode()">Activar Touch (Fallback)</button>
+    </div>
+
+    <div id="crosshair-container">
+        <div class="crosshair-lines" id="crosshair-visual"></div>
+    </div>
+
+    <div id="selection-wheel" role="toolbar" aria-label="Selección de objeto">
+        <button class="obj-btn active" data-type="cup" onclick="app.changeActiveObject('cup')" aria-label="Taza">☕</button>
+        <button class="obj-btn" data-type="laptop" onclick="app.changeActiveObject('laptop')" aria-label="Laptop">💻</button>
+        <button class="obj-btn" data-type="plant" onclick="app.changeActiveObject('plant')" aria-label="Planta">🌿</button>
+        <button class="obj-btn" data-type="bottle" onclick="app.changeActiveObject('bottle')" aria-label="Botella">🍾</button>
+    </div>
+
+    <script>
+        /**
+         * APLICACIÓN SINGLETON PARA WEBAR HEURÍSTICO
+         * * Lógica principal:
+         * 1. Captura de video y análisis de luminancia en canvas oculto.
+         * 2. Detección de "Estabilidad" (la cámara deja de moverse sobre un punto contrastado).
+         * 3. Colocación de objetos DOM con transformaciones CSS.
+         * 4. Actualización de posición basada en la diferencia de centroide (Optical Flow simplificado)
+         * y sensores de giroscopio/acelerómetro.
+         */
+        const app = {
+            // Configuración
+            config: {
+                canvasProcessingWidth: 320,
+                stabilityThresholdPixels: 6,      // Píxeles de movimiento tolerados
+                stabilityAreaChange: 0.15,        // % cambio de "área" (luma) tolerado
+                stabilityTimeMs: 1200,            // Tiempo requerido para bloquear anclaje
+                lateralSensitivity: 0.08,         // Multiplicador: Movimiento píxeles -> Movimiento CSS
+                scaleSensitivity: 0.5,            // Sensibilidad al zoom (acercarse/alejarse)
+                lerpFactorPos: 0.1,               // Suavizado de posición
+                lerpFactorRot: 0.1,               // Suavizado de rotación
+                shakeThreshold: 15                // m/s^2 para detectar sacudida
+            },
+
+            // Estado del Sistema
+            state: {
+                initialized: false,
+                mode: 'SEARCHING', // SEARCHING, STABLE, PLACED
+                activeObjectType: 'cup',
+                fallbackMode: false,
+                isStable: false,
+                stabilityTimerStart: 0,
+                
+                // Sensores
+                orientation: { alpha: 0, beta: 0, gamma: 0 },
+                acceleration: { x: 0, y: 0, z: 0 },
+                
+                // Datos de la escena visual (Computer Vision)
+                lastCentroid: { x: 0, y: 0 },
+                lastLumaSum: 0,
+                
+                // Anclaje
+                anchor: null // { baseCentroid, baseLuma, worldX, worldY, scale }
+            },
+
+            // Referencias DOM
+            dom: {},
+
+            // Init principal
+            init: async function() {
+                document.getElementById('start-overlay').style.display = 'none';
+                
+                this.dom.video = document.getElementById('camera-feed');
+                this.dom.canvas = document.getElementById('processing-canvas');
+                this.dom.ctx = this.dom.canvas.getContext('2d', { willReadFrequently: true });
+                this.dom.scene = document.getElementById('scene-container');
+                this.dom.status = document.getElementById('status-text');
+                this.dom.crosshair = document.getElementById('crosshair-visual');
+                this.dom.debug = document.getElementById('debug-info');
+
+                await this.initCamera();
+                this.initSensors();
+                this.startLoop();
+                this.state.initialized = true;
+            },
+
+            // 1. CÁMARA
+            initCamera: async function() {
+                const constraints = {
+                    audio: false,
+                    video: { facingMode: 'environment' } // Intento por defecto
+                };
+
+                try {
+                    // Intento riguroso para la trasera
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({ 
+                            video: { facingMode: { exact: "environment" } } 
+                        });
+                        this.dom.video.srcObject = stream;
+                    } catch (e) {
+                        // Fallback a "lo que haya"
+                        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                        this.dom.video.srcObject = stream;
+                    }
+                    this.dom.status.innerText = "Buscando superficie...";
+                } catch (err) {
+                    alert("Error acceso cámara: " + err.message);
+                    this.dom.status.innerText = "Error de Cámara";
+                    this.enableFallbackTouchMode();
+                }
+            },
+
+            // 2. SENSORES (DeviceOrientation & Motion)
+            initSensors: function() {
+                // Manejo especial iOS 13+
+                if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission()
+                        .then(response => {
+                            if (response === 'granted') {
+                                window.addEventListener('deviceorientation', e => this.handleOrientation(e));
+                                window.addEventListener('devicemotion', e => this.handleMotion(e));
+                            }
+                        })
+                        .catch(console.error);
+                } else {
+                    window.addEventListener('deviceorientation', e => this.handleOrientation(e));
+                    window.addEventListener('devicemotion', e => this.handleMotion(e));
+                }
+            },
+
+            handleOrientation: function(e) {
+                // Suavizado básico si es necesario, aquí tomamos raw para respuesta rápida
+                this.state.orientation = { 
+                    alpha: e.alpha || 0, // Compás (0-360)
+                    beta: e.beta || 0,   // Tilt Front/Back (-180, 180)
+                    gamma: e.gamma || 0  // Tilt Left/Right (-90, 90)
+                };
+            },
+
+            handleMotion: function(e) {
+                if(e.acceleration) {
+                    this.state.acceleration = e.acceleration;
+                    // Detectar sacudida para interacción (Botella)
+                    const mag = Math.sqrt(e.acceleration.x**2 + e.acceleration.y**2 + e.acceleration.z**2);
+                    if (mag > this.config.shakeThreshold) {
+                        this.triggerObjectInteraction('shake');
+                    }
+                }
+            },
+
+            // 3. BUCLE PRINCIPAL
+            startLoop: function() {
+                const loop = (timestamp) => {
+                    this.mainLoop(timestamp);
+                    requestAnimationFrame(loop);
+                };
+                requestAnimationFrame(loop);
+            },
+
+            mainLoop: function(timestamp) {
+                if (!this.dom.video.videoWidth) return;
+
+                // Configurar tamaño canvas interno si cambió
+                if (this.dom.canvas.width !== this.config.canvasProcessingWidth) {
+                    const aspect = this.dom.video.videoHeight / this.dom.video.videoWidth;
+                    this.dom.canvas.width = this.config.canvasProcessingWidth;
+                    this.dom.canvas.height = this.config.canvasProcessingWidth * aspect;
+                }
+
+                // A. Procesar Frame (Visión)
+                // Debounce simple: analizar cada frame puede ser costoso, hacemos cada frame pero optimizado
+                const visionData = this.processFrame();
+
+                // B. Lógica de Estado (Máquina de estados finitos simple)
+                this.updateStateLogic(visionData, timestamp);
+
+                // C. Renderizado / Actualización de Objetos
+                this.updateSceneObjects();
+                
+                // Debug UI
+                this.dom.debug.innerText = `Luma: ${visionData.lumaSum.toFixed(0)} | Stab: ${this.state.isStable ? 'SI' : 'NO'} | X: ${visionData.centroid.x.toFixed(1)}`;
+            },
+
+            // 4. PROCESAMIENTO DE IMAGEN (VISION)
+            processFrame: function() {
+                const ctx = this.dom.ctx;
+                const w = this.dom.canvas.width;
+                const h = this.dom.canvas.height;
+                
+                // Dibujar frame actual reducido
+                ctx.drawImage(this.dom.video, 0, 0, w, h);
+
+                // Analizar región central (ROI) - Heurística de anclaje
+                const roiSize = 80; // px
+                const roiX = (w - roiSize) / 2;
+                const roiY = (h - roiSize) / 2;
+                
+                const frameData = ctx.getImageData(roiX, roiY, roiSize, roiSize);
+                const data = frameData.data;
+                
+                let totalLuma = 0;
+                let sumX = 0, sumY = 0;
+                let pixelCount = 0;
+
+                // Loop pixeles (salto de 4 para optimizar performance)
+                for (let i = 0; i < data.length; i += 16) { 
+                    const r = data[i];
+                    const g = data[i+1];
+                    const b = data[i+2];
+                    
+                    // Luminancia aproximada
+                    const luma = 0.299*r + 0.587*g + 0.114*b;
+                    
+                    // Solo considerar pixeles brillantes/con
